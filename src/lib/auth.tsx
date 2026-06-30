@@ -20,19 +20,35 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session);
-      setUser(data.session?.user ?? null);
-      setLoading(false);
-    });
+    // Initialize session from storage
+    const initializeSession = async () => {
+      try {
+        const { data } = await supabase.auth.getSession();
+        setSession(data.session);
+        setUser(data.session?.user ?? null);
+        
+        // Validate and refresh token if needed (< 5 minutes left)
+        if (data.session?.expires_in && data.session.expires_in < 300) {
+          await supabase.auth.refreshSession();
+        }
+      } catch (error) {
+        console.error('Error initializing session:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
 
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, newSession) => {
+    initializeSession();
+
+    // Listen to auth state changes
+    const { data: listener } = supabase.auth.onAuthStateChange((event, newSession) => {
       setSession(newSession);
       setUser(newSession?.user ?? null);
       setLoading(false);
+
     });
 
-    return () => listener.subscription.unsubscribe();
+    return () => listener?.subscription.unsubscribe();
   }, []);
 
   const signIn = useCallback(async (email: string, password: string) => {
@@ -54,7 +70,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const signOut = useCallback(async () => {
-    await supabase.auth.signOut();
+    try {
+      // Check if there's an active session before attempting logout
+      const { data: { session: activeSession } } = await supabase.auth.getSession();
+      
+      if (!activeSession) {
+        // Session already cleared, just update local state
+        setSession(null);
+        setUser(null);
+        return;
+      }
+
+      const { error } = await supabase.auth.signOut();
+      
+      // 403 Forbidden on logout is often a token expiry issue - ignore it
+      // The local session is still cleared, which is what matters
+      if (error && error.status !== 403) {
+        console.error('Logout error:', error);
+      }
+    } catch (error) {
+      console.error('Error during sign out:', error);
+      // Always clear local state even if logout fails
+      setSession(null);
+      setUser(null);
+    }
   }, []);
 
   return (

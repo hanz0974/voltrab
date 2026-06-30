@@ -15,10 +15,8 @@ export function Modal({ open, onClose, title, subtitle, children, maxWidth = 'ma
     if (!open) return;
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
     window.addEventListener('keydown', onKey);
-    document.body.style.overflow = 'hidden';
     return () => {
       window.removeEventListener('keydown', onKey);
-      document.body.style.overflow = '';
     };
   }, [open, onClose]);
 
@@ -31,10 +29,10 @@ export function Modal({ open, onClose, title, subtitle, children, maxWidth = 'ma
         onClick={onClose}
       />
       <div
-        className={`relative w-full ${maxWidth} animate-slide-up rounded-t-3xl bg-white shadow-2xl sm:rounded-3xl max-h-[92vh] flex flex-col`}
+        className={`relative w-full ${maxWidth} animate-slide-up rounded-t-3xl bg-white shadow-2xl sm:rounded-3xl max-h-[92vh] flex flex-col overflow-hidden`}
       >
         {(title || subtitle) && (
-          <div className="flex items-start justify-between gap-4 border-b border-slate-100 px-6 py-5">
+          <div className="flex shrink-0 items-start justify-between gap-4 border-b border-slate-100 px-6 py-5">
             <div>
               {title && <h3 className="text-lg font-bold text-slate-900">{title}</h3>}
               {subtitle && <p className="mt-0.5 text-sm text-slate-500">{subtitle}</p>}
@@ -48,7 +46,7 @@ export function Modal({ open, onClose, title, subtitle, children, maxWidth = 'ma
             </button>
           </div>
         )}
-        <div className="overflow-y-auto px-6 py-5">{children}</div>
+        <div className="overflow-y-auto px-6 py-5 flex-1 min-h-0">{children}</div>
       </div>
     </div>
   );

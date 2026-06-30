@@ -5,7 +5,6 @@ import { uid } from './data';
 import { Stepper } from './components/Stepper';
 import { ProjectStep } from './components/ProjectStep';
 import { FloorsStep } from './components/FloorsStep';
-import { MethodStep } from './components/MethodStep';
 import { PartsStep } from './components/PartsStep';
 import { SummaryStep } from './components/SummaryStep';
 import { DetectionModal } from './components/DetectionModal';
@@ -13,7 +12,7 @@ import { AuthScreen } from './components/AuthScreen';
 import { useAuth } from './lib/auth';
 import { useProjectStorage, type ProjectData, type SavedProject } from './lib/useProjectStorage';
 
-const STEP_ORDER: StepId[] = ['project', 'floors', 'rooms', 'parts', 'summary'];
+const STEP_ORDER: StepId[] = ['project', 'floors', 'parts', 'summary'];
 
 function createInitialProject(): ProjectState {
   return {
@@ -42,9 +41,11 @@ export default function App() {
     loadProjects,
     saveProject,
     debouncedSave,
+    flushPendingSave,
     deleteProject,
     selectProject,
     saveRabReport,
+    fetchAndRestoreProject,
   } = useProjectStorage(user?.id);
 
   const [step, setStep] = useState<StepId>('project');
@@ -127,6 +128,7 @@ export default function App() {
   };
 
   const startNewProject = async () => {
+    flushPendingSave();
     restart();
     const data: ProjectData = {
       project: createInitialProject(),
@@ -143,9 +145,13 @@ export default function App() {
     setShowProjectMenu(false);
   };
 
-  const handleSelectProject = (proj: SavedProject) => {
+  const handleSelectProject = async (proj: SavedProject) => {
+    flushPendingSave();
     selectProject(proj.id);
-    restoreProject(proj);
+    const latestData = await fetchAndRestoreProject(proj.id);
+    if (latestData) {
+      restoreProject(latestData);
+    }
     setShowProjectMenu(false);
   };
 
@@ -374,10 +380,7 @@ export default function App() {
           />
         )}
         {step === 'floors' && (
-          <FloorsStep floors={floors} onChange={setFloors} onNext={advance} onBack={goBack} />
-        )}
-        {step === 'rooms' && (
-          <MethodStep floors={floors} onChange={setFloors} onNext={advance} onBack={goBack} />
+          <FloorsStep floors={floors} onChange={setFloors} onNext={advance} onBack={goBack} floorCount={floorCount} onFloorCountChange={applyFloorCount} />
         )}
         {step === 'parts' && (
           <PartsStep

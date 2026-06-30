@@ -9,11 +9,15 @@ interface FloorsStepProps {
   onChange: (floors: Floor[]) => void;
   onNext: () => void;
   onBack: () => void;
+  floorCount: number;
+  onFloorCountChange: (count: number) => void;
 }
 
-export function FloorsStep({ floors, onChange, onNext, onBack }: FloorsStepProps) {
+export function FloorsStep({ floors, onChange, onNext, onBack, floorCount, onFloorCountChange }: FloorsStepProps) {
   const [expandedId, setExpandedId] = useState<string | null>(floors[0]?.id ?? null);
   const [editingRoom, setEditingRoom] = useState<{ floorId: string; room: Room | null } | null>(null);
+  const [quickAddFloorId, setQuickAddFloorId] = useState<string | null>(null);
+  const [quickAddCount, setQuickAddCount] = useState<number>(1);
 
   const updateFloor = (floorId: string, patch: Partial<Floor>) => {
     onChange(floors.map((f) => (f.id === floorId ? { ...f, ...patch } : f)));
@@ -46,10 +50,92 @@ export function FloorsStep({ floors, onChange, onNext, onBack }: FloorsStepProps
     updateFloor(floorId, { rooms: floor.rooms.filter((r) => r.id !== roomId) });
   };
 
+  const addMultipleRooms = (floorId: string, count: number) => {
+    const floor = floors.find((f) => f.id === floorId);
+    if (!floor) return;
+    
+    const newRooms: Room[] = Array.from({ length: count }, (_, i) => ({
+      id: uid(),
+      name: `Ruangan ${floor.rooms.length + i + 1}`,
+      inputMode: 'manual',
+      parts: [],
+      detectionStatus: 'idle',
+    }));
+    
+    updateFloor(floorId, {
+      rooms: [...floor.rooms, ...newRooms],
+    });
+    
+    setQuickAddFloorId(null);
+    setQuickAddCount(1);
+  };
+
   const totalRooms = floors.reduce((sum, f) => sum + f.rooms.length, 0);
 
   return (
     <div className="animate-fade-in space-y-6">
+      <div className="card-base overflow-hidden">
+        <div className="border-b border-slate-100 bg-slate-50/60 px-6 py-4">
+          <div className="flex items-center gap-2">
+            <div className="h-4 w-4 text-brand-600">📋</div>
+            <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-600">
+              Struktur Bangunan
+            </h3>
+          </div>
+        </div>
+        <div className="p-6">
+          <label className="label-base">Jumlah Lantai *</label>
+          <p className="mb-4 text-xs text-slate-500">
+            Tentukan jumlah lantai pada bangunan.
+          </p>
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={() => onFloorCountChange(Math.max(1, floorCount - 1))}
+              className="flex h-11 w-11 items-center justify-center rounded-xl border border-slate-200 bg-white text-xl font-semibold text-slate-600 transition-all hover:border-brand-300 hover:bg-brand-50 hover:text-brand-700"
+            >
+              −
+            </button>
+            <div className="relative">
+              <input
+                type="number"
+                min={1}
+                max={50}
+                className="input-base w-24 text-center text-lg font-bold"
+                value={floorCount ?? 1}
+                onChange={(e) => onFloorCountChange(Math.max(1, Math.min(50, Number(e.target.value) || 1)))}
+              />
+            </div>
+            <button
+              type="button"
+              onClick={() => onFloorCountChange(Math.min(50, floorCount + 1))}
+              className="flex h-11 w-11 items-center justify-center rounded-xl border border-slate-200 bg-white text-xl font-semibold text-slate-600 transition-all hover:border-brand-300 hover:bg-brand-50 hover:text-brand-700"
+            >
+              +
+            </button>
+            <span className="text-sm text-slate-500">lantai</span>
+          </div>
+
+          <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
+            {[1, 2, 3, 5].map((n) => (
+              <button
+                key={n}
+                type="button"
+                onClick={() => onFloorCountChange(n)}
+                className={`rounded-xl border-2 px-4 py-3 text-center transition-all ${
+                  floorCount === n
+                    ? 'border-brand-600 bg-brand-50 text-brand-700'
+                    : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300'
+                }`}
+              >
+                <div className="text-lg font-bold">{n}</div>
+                <div className="text-xs">{n === 1 ? 'Lantai' : 'Lantai'}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h2 className="text-2xl font-bold text-slate-900">Lantai & Ruangan</h2>
@@ -145,6 +231,66 @@ export function FloorsStep({ floors, onChange, onNext, onBack }: FloorsStepProps
                     <Plus className="h-4 w-4" />
                     Tambah Ruangan
                   </button>
+
+                  {quickAddFloorId === floor.id ? (
+                    <div className="mt-3 space-y-3 rounded-xl border border-brand-200 bg-brand-50/50 p-4">
+                      <div>
+                        <label className="label-base text-xs">Berapa banyak ruangan yang ingin ditambahkan?</label>
+                        <div className="mt-2 flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setQuickAddCount(Math.max(1, quickAddCount - 1))}
+                            className="flex h-9 w-9 items-center justify-center rounded-lg border border-brand-300 bg-white text-sm font-semibold text-brand-700 transition-all hover:bg-brand-100"
+                          >
+                            −
+                          </button>
+                          <input
+                            type="number"
+                            min={1}
+                            max={50}
+                            className="w-16 rounded-lg border border-brand-300 bg-white px-3 py-2 text-center text-sm font-bold text-brand-700 outline-none focus:ring-2 focus:ring-brand-500/30"
+                            value={quickAddCount}
+                            onChange={(e) => setQuickAddCount(Math.max(1, Math.min(50, Number(e.target.value) || 1)))}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setQuickAddCount(Math.min(50, quickAddCount + 1))}
+                            className="flex h-9 w-9 items-center justify-center rounded-lg border border-brand-300 bg-white text-sm font-semibold text-brand-700 transition-all hover:bg-brand-100"
+                          >
+                            +
+                          </button>
+                          <span className="text-xs text-slate-500">ruangan</span>
+                        </div>
+                      </div>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => {
+                            setQuickAddFloorId(null);
+                            setQuickAddCount(1);
+                          }}
+                          className="flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-600 transition-all hover:bg-slate-50"
+                        >
+                          Batal
+                        </button>
+                        <button
+                          onClick={() => addMultipleRooms(floor.id, quickAddCount)}
+                          className="flex-1 rounded-lg bg-brand-600 px-3 py-2 text-sm font-medium text-white transition-all hover:bg-brand-700"
+                        >
+                          Buat {quickAddCount} Ruangan
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => {
+                        setQuickAddFloorId(floor.id);
+                        setQuickAddCount(1);
+                      }}
+                      className="mt-2 w-full rounded-lg border border-slate-200 px-3 py-2 text-xs font-medium text-slate-500 transition-all hover:border-slate-300 hover:bg-slate-50"
+                    >
+                      Atau input jumlah ruangan
+                    </button>
+                  )}
                 </div>
               )}
             </div>

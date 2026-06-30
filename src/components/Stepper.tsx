@@ -10,7 +10,6 @@ interface StepperProps {
 const STEPS: { id: StepId; label: string; short: string }[] = [
   { id: 'project', label: 'Informasi Project', short: 'Project' },
   { id: 'floors', label: 'Lantai & Ruangan', short: 'Lantai' },
-  { id: 'rooms', label: 'Metode Input', short: 'Metode' },
   { id: 'parts', label: 'Komponen', short: 'Part' },
   { id: 'summary', label: 'Ringkasan RAB', short: 'RAB' },
 ];

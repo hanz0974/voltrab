@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Plus, Trash2, Search, Package, Check } from 'lucide-react';
+import { Plus, Trash2, Search, Package, Check, PencilLine, ScanLine } from 'lucide-react';
 import type { Floor, PartItem, ComponentSpec } from '../types';
 import { COMPONENT_CATALOG, CATEGORY_COLORS, formatRupiah, uid } from '../data';
 import { CategoryBadge } from './CategoryBadge';
@@ -80,7 +80,7 @@ export function PartsStep({ floors, onChange, onNext, onBack, onOpenDetection }:
           <div className="border-b border-slate-100 bg-slate-50/60 px-4 py-3">
             <h3 className="text-sm font-semibold text-slate-700">Daftar Ruangan</h3>
           </div>
-          <div className="max-h-[60vh] overflow-y-auto p-2 lg:max-h-none">
+          <div className="max-h-[60vh] overflow-y-auto p-2 lg:max-h-[calc(100vh-200px)]">
             {floors.map((floor) => (
               <div key={floor.id} className="mb-2">
                 <div className="px-2 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">
@@ -142,40 +142,64 @@ export function PartsStep({ floors, onChange, onNext, onBack, onOpenDetection }:
                   </div>
                 </div>
 
-                {currentRoom.inputMode === 'detect' && (
-                  <div className="mt-4 rounded-xl border-2 border-dashed border-accent-200 bg-accent-50/40 p-4">
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <div>
-                        <h4 className="font-semibold text-slate-800">Deteksi Komponen dari SLD</h4>
-                        <p className="text-sm text-slate-500">
-                          Unggah gambar diagram SLD, sistem akan mendeteksi simbol & teks menggunakan YOLOv8 + OCR.
-                        </p>
-                      </div>
-                      <button
-                        className="btn-primary bg-accent-600 hover:bg-accent-700 hover:shadow-none"
-                        onClick={() => onOpenDetection(activeRoom!.floorId, activeRoom!.roomId)}
-                      >
-                        <Search className="h-4 w-4" />
-                        {currentRoom.detectionStatus === 'done' ? 'Deteksi Ulang' : 'Mulai Deteksi'}
-                      </button>
-                    </div>
-                    {currentRoom.detectionStatus === 'done' && (
-                      <div className="mt-3 flex items-center gap-2 rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
-                        <Check className="h-4 w-4" />
-                        {currentRoom.detections?.length ?? 0} komponen terdeteksi. Periksa & sesuaikan di tabel bawah.
-                      </div>
-                    )}
+                {/* Mode selection or detection section */}
+                <div className="mt-4 space-y-3">
+                  <div>
+                    <h4 className="font-semibold text-slate-800">Pilih Metode Input Komponen</h4>
+                    <p className="text-sm text-slate-500">Pilih cara menambahkan komponen untuk ruangan ini</p>
                   </div>
-                )}
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <button
+                      onClick={() => {
+                        updateRoom(activeRoom!.floorId, activeRoom!.roomId, { inputMode: 'manual' });
+                        setPickerOpen(true);
+                      }}
+                      className={`rounded-2xl border p-4 text-left transition-all ${
+                        currentRoom.inputMode === 'manual'
+                          ? 'border-brand-600 bg-brand-50 text-brand-700'
+                          : 'border-brand-200 bg-brand-50/50 text-brand-700 hover:border-brand-300'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2.5">
+                        <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-white shadow-sm">
+                          <PencilLine className="h-5 w-5" />
+                        </div>
+                        <h4 className="font-semibold">Input Manual</h4>
+                      </div>
+                      <p className="mt-2 text-sm text-slate-600">Isi komponen satu per satu dari katalog. Cocok untuk ruangan sederhana atau revisi cepat.</p>
+                    </button>
+                    <button
+                      onClick={() => {
+                        updateRoom(activeRoom!.floorId, activeRoom!.roomId, { inputMode: 'detect' });
+                        onOpenDetection(activeRoom!.floorId, activeRoom!.roomId);
+                      }}
+                      className={`rounded-2xl border p-4 text-left transition-all ${
+                        currentRoom.inputMode === 'detect'
+                          ? 'border-accent-600 bg-accent-50 text-accent-700'
+                          : 'border-accent-200 bg-accent-50/50 text-accent-700 hover:border-accent-300'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2.5">
+                        <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-white shadow-sm">
+                          <ScanLine className="h-5 w-5" />
+                        </div>
+                        <h4 className="font-semibold">Deteksi SLD (YOLOv8 + OCR)</h4>
+                      </div>
+                      <p className="mt-2 text-sm text-slate-600">Unggah diagram SLD, sistem mendeteksi simbol & teks komponen secara otomatis.</p>
+                    </button>
+                  </div>
+                  {currentRoom.inputMode === 'detect' && currentRoom.detectionStatus === 'done' && (
+                    <div className="flex items-center gap-2 rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+                      <Check className="h-4 w-4" />
+                      {currentRoom.detections?.length ?? 0} komponen terdeteksi. Periksa & sesuaikan di tabel bawah.
+                    </div>
+                  )}
+                </div>
               </div>
 
               <div className="card-base overflow-hidden">
-                <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3">
+                <div className="border-b border-slate-100 px-5 py-3">
                   <h4 className="font-semibold text-slate-700">Daftar Komponen</h4>
-                  <button className="btn-primary" onClick={() => setPickerOpen(true)}>
-                    <Plus className="h-4 w-4" />
-                    Tambah Komponen
-                  </button>
                 </div>
 
                 {currentRoom.parts.length === 0 ? (

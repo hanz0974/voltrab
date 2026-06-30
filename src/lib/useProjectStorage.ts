@@ -110,6 +110,13 @@ export function useProjectStorage(userId: string | undefined) {
     }, 1000);
   }, [saveProject]);
 
+  const flushPendingSave = useCallback(() => {
+    if (saveTimer.current) {
+      clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+    }
+  }, []);
+
   const deleteProject = useCallback(async (projectId: string) => {
     const { error } = await supabase
       .from('user_projects')
@@ -127,6 +134,22 @@ export function useProjectStorage(userId: string | undefined) {
   const selectProject = useCallback((projectId: string) => {
     setCurrentProjectId(projectId);
   }, []);
+
+  const fetchAndRestoreProject = useCallback(
+    async (projectId: string) => {
+      const { data, error } = await supabase
+        .from('user_projects')
+        .select('id, name, project_data, updated_at, created_at')
+        .eq('id', projectId)
+        .maybeSingle();
+
+      if (!error && data) {
+        return data as unknown as SavedProject;
+      }
+      return null;
+    },
+    [],
+  );
 
   const saveRabReport = useCallback(
     async (params: SaveRabParams): Promise<{ success: boolean; error: string | null }> => {
@@ -161,8 +184,10 @@ export function useProjectStorage(userId: string | undefined) {
     loadProjects,
     saveProject,
     debouncedSave,
+    flushPendingSave,
     deleteProject,
     selectProject,
     saveRabReport,
+    fetchAndRestoreProject,
   };
 }
