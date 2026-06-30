@@ -1,0 +1,6 @@
+RMDL PL-C 13W
+exit lamp
+local switch 1 way 1 gang
+local switch 2 way 1 gang
+reflector and louvre m5
+stage lamp gms light 1xtl5 14W
