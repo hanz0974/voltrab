@@ -39,6 +39,41 @@ export interface SaveRabParams {
   totalQty: number;
 }
 
+function mergeLatestProjects(projects: SavedProject[]): SavedProject[] {
+  const latestByName = new Map<string, SavedProject>();
+
+  for (const project of projects) {
+    const normalizedName = (project.name || 'Project Tanpa Nama').trim().toLowerCase();
+    const existing = latestByName.get(normalizedName);
+
+    if (!existing) {
+      latestByName.set(normalizedName, project);
+      continue;
+    }
+
+    const existingUpdated = new Date(existing.updated_at ?? 0).getTime();
+    const incomingUpdated = new Date(project.updated_at ?? 0).getTime();
+
+    if (incomingUpdated > existingUpdated) {
+      latestByName.set(normalizedName, project);
+      continue;
+    }
+
+    if (incomingUpdated === existingUpdated) {
+      const existingCreated = new Date(existing.created_at ?? 0).getTime();
+      const incomingCreated = new Date(project.created_at ?? 0).getTime();
+
+      if (incomingCreated > existingCreated) {
+        latestByName.set(normalizedName, project);
+      }
+    }
+  }
+
+  return Array.from(latestByName.values()).sort((a, b) => {
+    return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
+  });
+}
+
 export function useProjectStorage(userId: string | undefined) {
   const [savedProjects, setSavedProjects] = useState<SavedProject[]>([]);
   const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
@@ -54,9 +89,10 @@ export function useProjectStorage(userId: string | undefined) {
       .order('updated_at', { ascending: false });
 
     if (!error && data) {
-      setSavedProjects(data as unknown as SavedProject[]);
-      if (data.length > 0 && !currentProjectId) {
-        setCurrentProjectId(data[0].id);
+      const dedupedProjects = mergeLatestProjects(data as unknown as SavedProject[]);
+      setSavedProjects(dedupedProjects);
+      if (dedupedProjects.length > 0 && !currentProjectId) {
+        setCurrentProjectId(dedupedProjects[0].id);
       }
     }
     setLoadingProjects(false);

@@ -59,4 +59,4 @@ export interface DetectionResult {
   matchedComponentId?: string;
 }
 
-export type StepId = 'project' | 'floors' | 'parts' | 'summary';
+export type StepId = 'project' | 'components' | 'summary';

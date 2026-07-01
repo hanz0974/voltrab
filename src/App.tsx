@@ -4,15 +4,13 @@ import type { ProjectState, Floor, StepId, PartItem } from './types';
 import { uid } from './data';
 import { Stepper } from './components/Stepper';
 import { ProjectStep } from './components/ProjectStep';
-import { FloorsStep } from './components/FloorsStep';
-import { PartsStep } from './components/PartsStep';
+import { ComponentsStep } from './components/ComponentsStep';
 import { SummaryStep } from './components/SummaryStep';
-import { DetectionModal } from './components/DetectionModal';
 import { AuthScreen } from './components/AuthScreen';
 import { useAuth } from './lib/auth';
 import { useProjectStorage, type ProjectData, type SavedProject } from './lib/useProjectStorage';
 
-const STEP_ORDER: StepId[] = ['project', 'floors', 'parts', 'summary'];
+const STEP_ORDER: StepId[] = ['project', 'components', 'summary'];
 
 function createInitialProject(): ProjectState {
   return {
@@ -53,7 +51,6 @@ export default function App() {
   const [project, setProject] = useState<ProjectState>(createInitialProject);
   const [floorCount, setFloorCount] = useState(1);
   const [floors, setFloors] = useState<Floor[]>([createFloor(0)]);
-  const [detectionTarget, setDetectionTarget] = useState<{ floorId: string; roomId: string } | null>(null);
   const [showProjectMenu, setShowProjectMenu] = useState(false);
   const [restoring, setRestoring] = useState(false);
 
@@ -180,26 +177,6 @@ export default function App() {
       totalQty,
     });
   }, [project, floors, saveRabReport]);
-
-  const handleDetectionConfirm = (parts: PartItem[]) => {
-    if (!detectionTarget) return;
-    const { floorId, roomId } = detectionTarget;
-    setFloors((prev) =>
-      prev.map((f) =>
-        f.id === floorId
-          ? {
-              ...f,
-              rooms: f.rooms.map((r) =>
-                r.id === roomId
-                  ? { ...r, parts: [...r.parts, ...parts], detectionStatus: 'done' as const }
-                  : r,
-              ),
-            }
-          : f,
-      ),
-    );
-    setDetectionTarget(null);
-  };
 
   if (authLoading) {
     return (
@@ -347,7 +324,7 @@ export default function App() {
               </p>
               <div className="mt-6 flex flex-wrap gap-6 text-sm text-brand-100">
                 <div className="flex items-center gap-2">
-                  <span className="text-lg font-bold text-white">5</span> Langkah
+                  <span className="text-lg font-bold text-white">3</span> Langkah
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="text-lg font-bold text-white">20+</span> Komponen Katalog
@@ -379,16 +356,14 @@ export default function App() {
             onNext={advance}
           />
         )}
-        {step === 'floors' && (
-          <FloorsStep floors={floors} onChange={setFloors} onNext={advance} onBack={goBack} floorCount={floorCount} onFloorCountChange={applyFloorCount} />
-        )}
-        {step === 'parts' && (
-          <PartsStep
+        {step === 'components' && (
+          <ComponentsStep
             floors={floors}
             onChange={setFloors}
             onNext={advance}
             onBack={goBack}
-            onOpenDetection={(floorId, roomId) => setDetectionTarget({ floorId, roomId })}
+            floorCount={floorCount}
+            onFloorCountChange={applyFloorCount}
           />
         )}
         {step === 'summary' && (
@@ -414,11 +389,6 @@ export default function App() {
         </div>
       </footer>
 
-      <DetectionModal
-        open={detectionTarget !== null}
-        onClose={() => setDetectionTarget(null)}
-        onConfirm={handleDetectionConfirm}
-      />
     </div>
   );
 }

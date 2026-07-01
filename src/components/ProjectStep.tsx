@@ -84,7 +84,7 @@ export function ProjectStep({ project, onChange, floorCount, onFloorCountChange,
 
       <div className="flex justify-end">
         <button className="btn-primary" disabled={!canProceed} onClick={onNext}>
-          Lanjut ke Lantai & Ruangan
+          Lanjut ke Komponen
         </button>
       </div>
     </div>
