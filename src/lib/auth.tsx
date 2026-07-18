@@ -6,6 +6,7 @@ interface AuthContextValue {
   user: User | null;
   session: Session | null;
   loading: boolean;
+  isAdmin: boolean;
   signIn: (email: string, password: string) => Promise<{ error: string | null }>;
   signUp: (email: string, password: string) => Promise<{ error: string | null }>;
   signInWithGoogle: () => Promise<{ error: string | null }>;
@@ -18,14 +19,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
+  const [isAdmin, setIsAdmin] = useState(false);
 
   useEffect(() => {
     // Initialize session from storage
     const initializeSession = async () => {
       try {
         const { data } = await supabase.auth.getSession();
+        const currentUser = data.session?.user ?? null;
         setSession(data.session);
-        setUser(data.session?.user ?? null);
+        setUser(currentUser);
+        setIsAdmin(Boolean(currentUser?.email && currentUser.email.toLowerCase().includes('admin')));
         
         // Validate and refresh token if needed (< 5 minutes left)
         if (data.session?.expires_in && data.session.expires_in < 300) {
@@ -42,8 +46,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     // Listen to auth state changes
     const { data: listener } = supabase.auth.onAuthStateChange((event, newSession) => {
+      const currentUser = newSession?.user ?? null;
       setSession(newSession);
-      setUser(newSession?.user ?? null);
+      setUser(currentUser);
+      setIsAdmin(Boolean(currentUser?.email && currentUser.email.toLowerCase().includes('admin')));
       setLoading(false);
 
     });
@@ -70,34 +76,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const signOut = useCallback(async () => {
-    try {
-      // Check if there's an active session before attempting logout
-      const { data: { session: activeSession } } = await supabase.auth.getSession();
-      
-      if (!activeSession) {
-        // Session already cleared, just update local state
-        setSession(null);
-        setUser(null);
-        return;
-      }
-
-      const { error } = await supabase.auth.signOut();
-      
-      // 403 Forbidden on logout is often a token expiry issue - ignore it
-      // The local session is still cleared, which is what matters
-      if (error && error.status !== 403) {
-        console.error('Logout error:', error);
-      }
-    } catch (error) {
-      console.error('Error during sign out:', error);
-      // Always clear local state even if logout fails
-      setSession(null);
-      setUser(null);
+    // Force local logout without hitting Auth API endpoint to avoid
+    // intermittent 403/AuthSessionMissing during token-expired states.
+    if (typeof window !== 'undefined') {
+      const authKeys = Object.keys(window.localStorage).filter((key) =>
+        key.startsWith('sb-') && key.includes('auth-token'),
+      );
+      authKeys.forEach((key) => window.localStorage.removeItem(key));
     }
+
+    setSession(null);
+    setUser(null);
+    setIsAdmin(false);
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, session, loading, signIn, signUp, signInWithGoogle, signOut }}>
+    <AuthContext.Provider value={{ user, session, loading, isAdmin, signIn, signUp, signInWithGoogle, signOut }}>
       {children}
     </AuthContext.Provider>
   );

@@ -23,7 +23,9 @@ export function Stepper({ current, completed, onStepClick }: StepperProps) {
           const isCompleted = completed.has(step.id);
           const isCurrent = step.id === current;
           const isPast = idx < currentIndex;
-          const reachable = isCompleted || isCurrent || isPast;
+          const isSummary = step.id === 'summary';
+          const isComponents = step.id === 'components';
+          const reachable = isCompleted || isCurrent || isPast || isSummary || isComponents;
 
           return (
             <div key={step.id} className="flex flex-1 items-center">

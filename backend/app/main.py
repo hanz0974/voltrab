@@ -29,6 +29,11 @@ app.include_router(projects.router)
 app.include_router(detection.router)
 
 
+@app.on_event("startup")
+def preload_detection_model():
+    detection.preload_active_model()
+
+
 @app.get("/")
 def root():
     return {"status": "ok", "service": "VoltRAB API", "version": "1.0.0"}

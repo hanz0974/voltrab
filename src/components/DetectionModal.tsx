@@ -3,13 +3,15 @@ import {
   Upload,
   ScanLine,
   CheckCircle2,
-  Image as ImageIcon,
   X,
   RefreshCw,
   AlertCircle,
+  PencilIcon,
+  Send,
+  MessageSquareWarning,
 } from "lucide-react";
-import type { DetectionResult, PartItem } from "../types";
-import { COMPONENT_CATALOG, formatRupiah, uid } from "../data";
+import type { DetectionResult, PartItem, ComponentSpec } from "../types";
+import { formatRupiah, uid } from "../data";
 import { apiDetectImage } from "../lib/api";
 import { Modal } from "./Modal";
 import { supabase } from "../lib/supabase"; // SESUAIKAN PATH INI
@@ -18,6 +20,12 @@ interface DetectionModalProps {
   open: boolean;
   onClose: () => void;
   onConfirm: (parts: PartItem[]) => void;
+  onComplete: (image: string, detections: DetectionResult[]) => void;
+  projectName: string;
+  floorName: string;
+  roomName: string;
+  catalogComponents: ComponentSpec[];
+  catalogLoading: boolean;
 }
 
 const LABEL_TO_COMPONENT: Record<string, string> = {
@@ -31,72 +39,54 @@ const LABEL_TO_COMPONENT: Record<string, string> = {
   "Panel Box": "c-panel-box",
 };
 
-const MOCK_DETECTIONS = [
-  {
-    label: "MCB",
-    confidence: 0.94,
-    bbox: { x: 15, y: 20, width: 18, height: 12 },
-    ocr_text: "16A",
-  },
-  {
-    label: "MCCB",
-    confidence: 0.91,
-    bbox: { x: 40, y: 18, width: 22, height: 16 },
-    ocr_text: "100A 3P",
-  },
-  {
-    label: "RCCB",
-    confidence: 0.88,
-    bbox: { x: 68, y: 22, width: 20, height: 14 },
-    ocr_text: "40A 30mA",
-  },
-  {
-    label: "Kabel NYM",
-    confidence: 0.86,
-    bbox: { x: 20, y: 55, width: 30, height: 8 },
-    ocr_text: "3x2.5mm",
-  },
-  {
-    label: "Lampu LED",
-    confidence: 0.92,
-    bbox: { x: 55, y: 50, width: 14, height: 14 },
-    ocr_text: "18W",
-  },
-  {
-    label: "Stop Kontak",
-    confidence: 0.84,
-    bbox: { x: 75, y: 52, width: 16, height: 12 },
-    ocr_text: "Tunggal",
-  },
-  {
-    label: "Saklar",
-    confidence: 0.89,
-    bbox: { x: 30, y: 75, width: 14, height: 10 },
-    ocr_text: "Tunggal",
-  },
-  {
-    label: "Panel Box",
-    confidence: 0.79,
-    bbox: { x: 60, y: 72, width: 24, height: 18 },
-    ocr_text: "1 Pintu",
-  },
-];
-
 export function DetectionModal({
   open,
   onClose,
   onConfirm,
+  onComplete,
+  projectName,
+  floorName,
+  roomName,
+  catalogComponents,
+  catalogLoading,
 }: DetectionModalProps) {
   const [stage, setStage] = useState<
-    "upload" | "processing" | "done" | "error"
+    "upload" | "processing" | "done" | "error" | "manual"
   >("upload");
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [detections, setDetections] = useState<DetectionResult[]>([]);
   const [progress, setProgress] = useState(0);
   const [processingStep, setProcessingStep] = useState("");
   const [errorMsg, setErrorMsg] = useState("");
+  const [manualSearch, setManualSearch] = useState("");
+  const [manualSelected, setManualSelected] = useState<string[]>([]);
+  const [manualQuantities, setManualQuantities] = useState<Record<string, number>>({});
+  const [detectionValid, setDetectionValid] = useState<"yes" | "no" | null>(null);
+  const [reportComplaint, setReportComplaint] = useState("");
+  const [reportSending, setReportSending] = useState(false);
+  const [reportSent, setReportSent] = useState(false);
+  const [reportError, setReportError] = useState("");
+  const [autoReportSent, setAutoReportSent] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const dragRef = useRef<HTMLDivElement>(null);
+
+  const manualResults = catalogComponents.filter((component) =>
+    component.name.toLowerCase().includes(manualSearch.toLowerCase()) ||
+    component.category.toLowerCase().includes(manualSearch.toLowerCase()),
+  );
+
+  const toggleManualSelected = (id: string) => {
+    setManualSelected((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id],
+    );
+  };
+
+  const updateManualQuantity = (id: string, qty: number) => {
+    setManualQuantities((prev) => ({
+      ...prev,
+      [id]: Math.max(1, qty),
+    }));
+  };
 
   useEffect(() => {
     if (!open) {
@@ -105,10 +95,108 @@ export function DetectionModal({
       setDetections([]);
       setProgress(0);
       setErrorMsg("");
+      setManualSearch("");
+      setManualSelected([]);
+      setManualQuantities({});
+      setDetectionValid(null);
+      setReportComplaint("");
+      setReportSending(false);
+      setReportSent(false);
+      setReportError("");
+      setAutoReportSent(false);
     }
   }, [open]);
 
-  const runDetection = async (file: File) => {
+  const insertFeedbackReport = async (payload: Record<string, unknown>) => {
+    const { error } = await supabase.from("detection_feedback_reports").insert(payload);
+
+    // Compatibility fallback when new columns are not migrated yet.
+    if (error && /column .* does not exist/i.test(error.message)) {
+      const legacyPayload = {
+        user_id: payload.user_id,
+        reporter_email: payload.reporter_email,
+        project_name: payload.project_name,
+        floor_name: payload.floor_name,
+        room_name: payload.room_name,
+        complaint: payload.complaint,
+        detection_image: payload.detection_image,
+        detections: payload.detections,
+        status: payload.status,
+      };
+      const { error: legacyError } = await supabase
+        .from("detection_feedback_reports")
+        .insert(legacyPayload);
+      return legacyError;
+    }
+
+    return error;
+  };
+
+  const sendAutoErrorReport = async (params: {
+    errorType: string;
+    userMessage: string;
+    file?: File;
+    rawError?: unknown;
+    detectionsPayload?: DetectionResult[];
+    image?: string | null;
+  }) => {
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
+      const user = session?.user;
+      if (!user) return;
+
+      const rawErrorMessage =
+        params.rawError instanceof Error
+          ? params.rawError.message
+          : typeof params.rawError === "string"
+            ? params.rawError
+            : null;
+
+      const systemReport = {
+        source: "system",
+        trigger: "detection_error",
+        error_type: params.errorType,
+        user_message: params.userMessage,
+        raw_error: rawErrorMessage,
+        stage,
+        processing_step: processingStep,
+        project_name: projectName || "Project Tanpa Nama",
+        floor_name: floorName || null,
+        room_name: roomName || null,
+        file_name: params.file?.name ?? null,
+        file_size: params.file?.size ?? null,
+        file_type: params.file?.type ?? null,
+        detection_count: (params.detectionsPayload ?? []).length,
+        created_at: new Date().toISOString(),
+      };
+
+      const error = await insertFeedbackReport({
+        user_id: user.id,
+        reporter_email: user.email ?? null,
+        project_name: projectName || "Project Tanpa Nama",
+        floor_name: floorName || null,
+        room_name: roomName || null,
+        complaint: `[AUTO] ${params.userMessage}`,
+        detection_image: params.image ?? imagePreview ?? null,
+        detections: params.detectionsPayload ?? [],
+        status: "open",
+        report_source: "system",
+        error_type: params.errorType,
+        system_report: systemReport,
+      });
+
+      if (!error) {
+        setAutoReportSent(true);
+      }
+    } catch {
+      // Do not block user flow if report delivery fails.
+    }
+  };
+
+  const runDetection = async (file: File, previewImage?: string) => {
     setStage("processing");
     setProgress(0);
     setProcessingStep("Mengunggah gambar ke server...");
@@ -138,7 +226,14 @@ export function DetectionModal({
       if (!token) {
         clearInterval(progressInterval);
         setStage("error");
-        setErrorMsg("Sesi login tidak ditemukan. Silakan login ulang.");
+        const message = "Sesi login tidak ditemukan. Silakan login ulang.";
+        setErrorMsg(message);
+        await sendAutoErrorReport({
+          errorType: "missing_session_token",
+          userMessage: message,
+          file,
+          image: previewImage ?? imagePreview,
+        });
         return;
       }
       const result = await apiDetectImage(file, token);
@@ -156,59 +251,131 @@ export function DetectionModal({
           d.matched_component_id ?? LABEL_TO_COMPONENT[d.label],
       }));
 
-      setDetections(results);
-
-      if (result.image_url) {
-        setImagePreview(result.image_url);
+      if (results.length === 0) {
+        setDetections([]);
+        const message =
+          "Tidak ada objek terdeteksi pada gambar. Silakan masukkan komponen secara manual.";
+        setErrorMsg(message);
+        setStage("error");
+        await sendAutoErrorReport({
+          errorType: "empty_detection_result",
+          userMessage: message,
+          file,
+          detectionsPayload: results,
+          image: result.image_url || previewImage || imagePreview,
+        });
+        return;
       }
 
+      setDetections(results);
+
+      const finalImage = result.image_url || previewImage || imagePreview || "";
+      if (finalImage) {
+        setImagePreview(finalImage);
+      }
+      setDetections(results);
       setStage("done");
-    } catch {
-      // Backend FastAPI tidak aktif — fallback ke mock detections
+      onComplete(finalImage, results);
+    } catch (error) {
       clearInterval(progressInterval);
       setProgress(100);
       setProcessingStep("Finalisasi hasil deteksi...");
-
-      const mockResults: DetectionResult[] = MOCK_DETECTIONS.map((d) => ({
-        id: uid(),
-        label: d.label,
-        confidence: d.confidence,
-        bbox: d.bbox,
-        ocrText: d.ocr_text,
-        matchedComponentId: LABEL_TO_COMPONENT[d.label],
-      }));
-
-      setDetections(mockResults);
-      setStage("done");
+      const message =
+        error instanceof Error && error.message
+          ? `Deteksi otomatis gagal: ${error.message}`
+          : "Deteksi otomatis gagal. Silakan masukkan komponen secara manual.";
+      setErrorMsg(message);
+      setDetections([]);
+      setStage("error");
+      await sendAutoErrorReport({
+        errorType: "detection_runtime_error",
+        userMessage: message,
+        rawError: error,
+        file,
+        image: previewImage ?? imagePreview,
+      });
     }
   };
 
   const handleFile = (file: File) => {
     const reader = new FileReader();
     reader.onload = (e) => {
-      setImagePreview(e.target?.result as string);
-      runDetection(file);
+      const preview = e.target?.result as string;
+      setImagePreview(preview);
+      runDetection(file, preview);
+    };
+    reader.onerror = () => {
+      const message = "Gagal membaca file gambar sebelum deteksi.";
+      setStage("error");
+      setErrorMsg(message);
+      void sendAutoErrorReport({
+        errorType: "file_read_error",
+        userMessage: message,
+        file,
+        rawError: "FileReader onerror",
+      });
     };
     reader.readAsDataURL(file);
   };
 
-  const useSampleImage = () => {
-    // Untuk sample, buat blob dari SVG dummy dan kirim ke API
-    setImagePreview("sample");
-    // Buat file dummy dari SVG
-    const svgContent = `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="300" viewBox="0 0 100 75">
-      <rect width="100" height="75" fill="#1e293b"/>
-      <rect x="15" y="20" width="18" height="12" fill="none" stroke="#38bdf8" stroke-width="1"/>
-      <rect x="40" y="18" width="22" height="16" fill="none" stroke="#fbbf24" stroke-width="1"/>
-      <rect x="68" y="22" width="20" height="14" fill="none" stroke="#34d399" stroke-width="1"/>
-      <circle cx="62" cy="57" r="7" fill="none" stroke="#fbbf24" stroke-width="1"/>
-      <rect x="75" y="52" width="16" height="12" fill="none" stroke="#38bdf8" stroke-width="1"/>
-      <rect x="30" y="75" width="14" height="10" fill="none" stroke="#a78bfa" stroke-width="1"/>
-      <rect x="60" y="72" width="24" height="18" fill="none" stroke="#f87171" stroke-width="1"/>
-    </svg>`;
-    const blob = new Blob([svgContent], { type: "image/svg+xml" });
-    const file = new File([blob], "sample-sld.svg", { type: "image/svg+xml" });
-    runDetection(file);
+  const openManualEntry = () => {
+    setStage("manual");
+    setErrorMsg("");
+  };
+
+  const handleSendReport = async () => {
+    if (detectionValid !== "no") return;
+
+    const complaint = reportComplaint.trim();
+    if (complaint.length < 5) {
+      setReportError("Mohon isi keluhan minimal 5 karakter.");
+      return;
+    }
+
+    setReportSending(true);
+    setReportError("");
+
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
+      const user = session?.user;
+      if (!user) {
+        setReportError("Sesi login tidak ditemukan. Silakan login ulang.");
+        return;
+      }
+
+      const error = await insertFeedbackReport({
+        user_id: user.id,
+        reporter_email: user.email ?? null,
+        project_name: projectName || "Project Tanpa Nama",
+        floor_name: floorName || null,
+        room_name: roomName || null,
+        complaint,
+        detection_image: imagePreview || null,
+        detections: detections,
+        status: "open",
+        report_source: "user",
+        error_type: null,
+        system_report: {
+          source: "user",
+          trigger: "manual_feedback",
+          created_at: new Date().toISOString(),
+          stage,
+          processing_step: processingStep,
+        },
+      });
+
+      if (error) {
+        setReportError(error.message || "Gagal mengirim report ke admin.");
+        return;
+      }
+
+      setReportSent(true);
+    } finally {
+      setReportSending(false);
+    }
   };
 
   const updateDetection = (id: string, patch: Partial<DetectionResult>) => {
@@ -222,31 +389,51 @@ export function DetectionModal({
   };
 
   const handleConfirm = () => {
-    const parts: PartItem[] = detections
-      .filter((d) => d.matchedComponentId)
-      .map((d) => {
-        const comp = COMPONENT_CATALOG.find(
-          (c) => c.id === d.matchedComponentId,
-        )!;
-        return {
+    if (stage === "manual") {
+      const parts: PartItem[] = manualSelected
+        .map((id) => catalogComponents.find((c) => c.id === id))
+        .filter((comp): comp is ComponentSpec => Boolean(comp))
+        .map((comp) => ({
           id: uid(),
           componentId: comp.id,
           name: comp.name,
           category: comp.category,
           unit: comp.unit,
-          quantity: 1,
+          quantity: manualQuantities[comp.id] ?? 1,
           price: comp.price,
-        };
-      });
+        }));
+      onConfirm(parts);
+      return;
+    }
+
+    const parts: PartItem[] = detections
+      .filter((d) => d.matchedComponentId)
+      .map((d) => ({ detection: d, component: catalogComponents.find((c) => c.id === d.matchedComponentId) }))
+      .filter((entry): entry is { detection: DetectionResult; component: ComponentSpec } => Boolean(entry.component))
+      .map(({ detection, component }) => ({
+        id: uid(),
+        componentId: component.id,
+        name: component.name,
+        category: component.category,
+        unit: component.unit,
+        quantity: 1,
+        price: component.price,
+      }));
     onConfirm(parts);
   };
+
+  const modalTitle = stage === "manual" ? "Input Manual Komponen" : "Deteksi Komponen SLD";
+  const modalSubtitle =
+    stage === "manual"
+      ? "Pilih komponen dari katalog secara manual untuk ditambahkan ke RAB."
+      : "Unggah diagram SLD, deteksi otomatis dengan YOLOv8 + OCR via FastAPI.";
 
   return (
     <Modal
       open={open}
       onClose={onClose}
-      title="Deteksi Komponen SLD"
-      subtitle="Unggah diagram SLD, deteksi otomatis dengan YOLOv8 + OCR via FastAPI."
+      title={modalTitle}
+      subtitle={modalSubtitle}
       maxWidth="max-w-4xl"
     >
       <input
@@ -301,9 +488,9 @@ export function DetectionModal({
               <Upload className="h-4 w-4" />
               Pilih File
             </button>
-            <button className="btn-secondary" onClick={useSampleImage}>
-              <ImageIcon className="h-4 w-4" />
-              Gunakan Contoh SLD
+            <button className="btn-secondary" onClick={openManualEntry}>
+              <PencilIcon className="h-4 w-4" />
+              Input Manual
             </button>
           </div>
           <p className="mt-4 text-xs text-slate-400">
@@ -351,14 +538,153 @@ export function DetectionModal({
             </h4>
             <p className="mt-1 text-sm text-slate-500">{errorMsg}</p>
             <p className="mt-2 text-xs text-slate-400">
-              Pastikan server FastAPI berjalan di{" "}
-              <code className="rounded bg-slate-100 px-1">localhost:8000</code>
+              Jika gambar tidak bisa dideteksi, Anda dapat memasukkan komponen secara manual.
             </p>
+            {autoReportSent && (
+              <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                Laporan error deteksi otomatis sudah dikirim ke admin.
+              </p>
+            )}
+            <div className="mt-5 flex flex-col gap-3 sm:flex-row sm:justify-center">
+              <button
+                className="btn-primary"
+                onClick={() => {
+                  setStage("manual");
+                }}
+              >
+                Input Manual
+              </button>
+              <button
+                className="btn-secondary"
+                onClick={() => setStage("upload")}
+              >
+                Unggah Ulang
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {stage === "manual" && (
+        <div className="space-y-4">
+          <div className="grid gap-4 lg:grid-cols-[2fr_1fr]">
+            <div className="space-y-4">
+              <div>
+                <label className="label-base">Cari Komponen</label>
+                <input
+                  type="text"
+                  value={manualSearch}
+                  onChange={(e) => setManualSearch(e.target.value)}
+                  placeholder="Cari nama atau kategori..."
+                  className="input-base w-full"
+                />
+              </div>
+              <div className="max-h-[55vh] overflow-y-auto rounded-3xl border border-slate-200 bg-white p-3">
+                {catalogLoading ? (
+                  <div className="py-12 text-center text-sm text-slate-500">Memuat katalog komponen...</div>
+                ) : manualResults.length === 0 ? (
+                  <div className="py-12 text-center text-sm text-slate-500">
+                    Tidak ada komponen yang sesuai. Coba kata kunci lain.
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {manualResults.map((comp) => {
+                      const selected = manualSelected.includes(comp.id);
+                      return (
+                        <button
+                          key={comp.id}
+                          type="button"
+                          onClick={() => toggleManualSelected(comp.id)}
+                          className={`flex w-full items-center justify-between rounded-2xl border px-4 py-3 text-left transition-all ${
+                            selected
+                              ? 'border-brand-600 bg-brand-50'
+                              : 'border-slate-200 bg-white hover:border-slate-300'
+                          }`}
+                        >
+                          <div>
+                            <div className="text-sm font-medium text-slate-900">
+                              {comp.name}
+                            </div>
+                            <div className="text-xs text-slate-500">
+                              {comp.category} · {formatRupiah(comp.price)} / {comp.unit}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className="rounded-full bg-slate-100 px-2 py-1 text-xs text-slate-600">
+                              {selected ? 'Dipilih' : 'Pilih'}
+                            </span>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="rounded-3xl border border-slate-200 bg-slate-50 p-4">
+              <div className="mb-3 flex items-center justify-between">
+                <div>
+                  <h4 className="text-sm font-semibold text-slate-800">Komponen Terpilih</h4>
+                  <p className="text-xs text-slate-500">{manualSelected.length} komponen</p>
+                </div>
+                <button
+                  type="button"
+                  className="text-xs text-brand-600"
+                  onClick={() => {
+                    setManualSelected([]);
+                    setManualQuantities({});
+                  }}
+                >
+                  Kosongkan
+                </button>
+              </div>
+              <div className="space-y-3">
+                {manualSelected.length === 0 ? (
+                  <div className="rounded-2xl border border-dashed border-slate-200 bg-white p-4 text-center text-sm text-slate-500">
+                    Pilih komponen dari daftar untuk menambahkan.
+                  </div>
+                ) : (
+                  manualSelected
+                    .map((id) => catalogComponents.find((c) => c.id === id))
+                    .filter((comp): comp is ComponentSpec => Boolean(comp))
+                    .map((comp) => (
+                      <div key={comp.id} className="rounded-2xl border border-slate-200 bg-white p-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <div className="text-sm font-medium text-slate-900">{comp.name}</div>
+                            <div className="text-xs text-slate-500">{comp.category}</div>
+                          </div>
+                          <input
+                            type="number"
+                            min={1}
+                            value={manualQuantities[comp.id] ?? 1}
+                            onChange={(e) => updateManualQuantity(comp.id, Number(e.target.value) || 1)}
+                            className="w-20 rounded-xl border border-slate-200 bg-slate-100 px-3 py-2 text-sm text-center"
+                          />
+                        </div>
+                      </div>
+                    ))
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-3 sm:flex-row sm:justify-end">
             <button
-              className="btn-secondary mt-5"
+              type="button"
+              className="btn-secondary"
               onClick={() => setStage("upload")}
             >
-              Coba Lagi
+              Kembali
+            </button>
+            <button
+              type="button"
+              className="btn-primary"
+              disabled={manualSelected.length === 0}
+              onClick={handleConfirm}
+            >
+              Tambahkan ke RAB
             </button>
           </div>
         </div>
@@ -375,12 +701,13 @@ export function DetectionModal({
                   Hasil Deteksi Visual
                 </h4>
               </div>
-              <div className="relative aspect-[4/3] overflow-hidden rounded-xl border border-slate-200 bg-slate-900">
+              <div className="relative overflow-hidden rounded-xl border border-slate-200 bg-slate-900" style={{ width: '100%' }}>
                 {imagePreview && imagePreview !== "sample" ? (
                   <img
                     src={imagePreview}
                     alt="SLD"
-                    className="h-full w-full object-contain"
+                    className="block w-full"
+                    style={{ height: 'auto' }}
                   />
                 ) : (
                   <SampleSLD />
@@ -420,7 +747,7 @@ export function DetectionModal({
               </div>
               <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
                 {detections.map((d, idx) => {
-                  const comp = COMPONENT_CATALOG.find(
+                  const comp = catalogComponents.find(
                     (c) => c.id === d.matchedComponentId,
                   );
                   return (
@@ -470,7 +797,7 @@ export function DetectionModal({
                           }
                         >
                           <option value="">Pilih komponen...</option>
-                          {COMPONENT_CATALOG.map((c) => (
+                          {catalogComponents.map((c) => (
                             <option key={c.id} value={c.id}>
                               {c.name} — {formatRupiah(c.price)}
                             </option>
@@ -489,20 +816,116 @@ export function DetectionModal({
             </div>
           </div>
 
+          <div className="space-y-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
+            <div className="flex items-center gap-2 text-sm font-medium text-slate-700">
+              <MessageSquareWarning className="h-4 w-4" />
+              Apakah hasil deteksi sudah sesuai?
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                className={`rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+                  detectionValid === "yes"
+                    ? "bg-emerald-100 text-emerald-700"
+                    : "border border-slate-200 bg-white text-slate-600 hover:bg-slate-100"
+                }`}
+                onClick={() => {
+                  setDetectionValid("yes");
+                  setReportError("");
+                }}
+              >
+                Ya, sudah sesuai
+              </button>
+              <button
+                type="button"
+                className={`rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+                  detectionValid === "no"
+                    ? "bg-rose-100 text-rose-700"
+                    : "border border-slate-200 bg-white text-slate-600 hover:bg-slate-100"
+                }`}
+                onClick={() => {
+                  setDetectionValid("no");
+                  setReportSent(false);
+                }}
+              >
+                Tidak sesuai
+              </button>
+            </div>
+
+            {detectionValid === "no" && (
+              <div className="space-y-3 rounded-xl border border-rose-200 bg-rose-50 p-3">
+                <label className="text-sm font-medium text-rose-700">
+                  Jelaskan keluhan deteksi
+                </label>
+                <textarea
+                  value={reportComplaint}
+                  onChange={(e) => setReportComplaint(e.target.value)}
+                  rows={4}
+                  className="w-full rounded-lg border border-rose-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-rose-300"
+                  placeholder="Contoh: simbol MCB di sisi kanan tidak terbaca, label OCR keliru, atau ada komponen yang terlewat."
+                />
+
+                {reportError && (
+                  <div className="rounded-lg border border-rose-200 bg-white px-3 py-2 text-xs text-rose-700">
+                    {reportError}
+                  </div>
+                )}
+
+                {reportSent ? (
+                  <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
+                    Report berhasil dikirim ke admin beserta gambar deteksi.
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    onClick={() => {
+                      void handleSendReport();
+                    }}
+                    disabled={reportSending}
+                  >
+                    {reportSending ? (
+                      <>
+                        <RefreshCw className="h-4 w-4 animate-spin" />
+                        Mengirim Report...
+                      </>
+                    ) : (
+                      <>
+                        <Send className="h-4 w-4" />
+                        Kirim Report ke Admin
+                      </>
+                    )}
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+
           <div className="flex items-center justify-between rounded-xl bg-brand-50 px-4 py-3">
             <div className="flex items-center gap-2 text-sm text-brand-700">
               <CheckCircle2 className="h-4 w-4" />
-              {detections.filter((d) => d.matchedComponentId).length} komponen
-              siap ditambahkan ke RAB.
+              {detectionValid === "no"
+                ? "Jika deteksi tidak sesuai, kirim report lalu gunakan input manual atau deteksi ulang."
+                : `${detections.filter((d) => d.matchedComponentId).length} komponen siap ditambahkan ke RAB.`}
             </div>
             <div className="flex gap-2">
               <button className="btn-ghost" onClick={() => setStage("upload")}>
                 Ganti Gambar
               </button>
-              <button className="btn-primary" onClick={handleConfirm}>
-                <CheckCircle2 className="h-4 w-4" />
-                Konfirmasi & Tambah
-              </button>
+              {detectionValid === "no" ? (
+                <button className="btn-secondary" onClick={() => setStage("manual")}>
+                  Input Manual
+                </button>
+              ) : (
+                <button
+                  className="btn-primary"
+                  onClick={handleConfirm}
+                  disabled={detectionValid !== "yes"}
+                >
+                  <CheckCircle2 className="h-4 w-4" />
+                  Konfirmasi & Tambah
+                </button>
+              )}
             </div>
           </div>
         </div>

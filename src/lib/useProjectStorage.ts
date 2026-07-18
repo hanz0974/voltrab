@@ -86,6 +86,7 @@ export function useProjectStorage(userId: string | undefined) {
     const { data, error } = await supabase
       .from('user_projects')
       .select('id, name, project_data, updated_at, created_at')
+      .eq('user_id', userId)
       .order('updated_at', { ascending: false });
 
     if (!error && data) {
@@ -127,7 +128,7 @@ export function useProjectStorage(userId: string | undefined) {
 
     const { data: inserted, error } = await supabase
       .from('user_projects')
-      .insert({ project_data: payload, name })
+      .insert({ user_id: userId, project_data: payload, name })
       .select('id')
       .maybeSingle();
 
@@ -177,6 +178,7 @@ export function useProjectStorage(userId: string | undefined) {
         .from('user_projects')
         .select('id, name, project_data, updated_at, created_at')
         .eq('id', projectId)
+        .eq('user_id', userId)
         .maybeSingle();
 
       if (!error && data) {
@@ -197,6 +199,7 @@ export function useProjectStorage(userId: string | undefined) {
       };
 
       const { error } = await supabase.from('rab_reports').insert({
+        user_id: userId,
         project_name: params.project.name || 'Project Tanpa Nama',
         client: params.project.client || null,
         location: params.project.location || null,

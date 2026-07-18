@@ -5,12 +5,15 @@ Menerima upload gambar, menjalankan inferensi, dan mengembalikan hasil deteksi.
 import os
 import uuid
 import base64
-import glob
+import threading
+import tempfile
 import cv2
 import numpy as np
+import requests
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, status
 from app.core.security import decode_access_token
 from app.core.config import UPLOAD_DIR
+from app.core.database import execute_query
 from app.models.schemas import DetectionResponse, DetectionResultItem
 
 router = APIRouter(prefix="/detect", tags=["detection"])
@@ -31,32 +34,162 @@ LABEL_TO_COMPONENT = {
     "stage lamp gms light 1xtl5 14W": "c-stage-lamp"
 }
 
-MODELS_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "models")
+from app.core.config import SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
+
+MODEL_BUCKET = "yolo-models"
+MODEL_CACHE_DIR = os.path.join(tempfile.gettempdir(), "voltrab_models")
+os.makedirs(MODEL_CACHE_DIR, exist_ok=True)
+LOCAL_MODEL_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "models"))
+LOCAL_MODEL_CANDIDATES = [
+    os.getenv("ONNX_MODEL_PATH", ""),
+    os.path.join(LOCAL_MODEL_DIR, "yolov8 (3).onnx"),
+    os.path.join(LOCAL_MODEL_DIR, "yolov8_sld.onnx"),
+    os.path.join(LOCAL_MODEL_DIR, "yolov8n.onnx"),
+]
+
 CONF_THRESHOLD = 0.50
 IOU_THRESHOLD = 0.40
 
 # Lazy-load model OpenCV dan OCR engine
 _yolo_net = None
 _ocr_reader = None
+_model_lock = threading.Lock()
+_cached_model_id = None
+_cached_model_updated_at = None
+_cached_model_path = None
 
-def find_onnx_model() -> str | None:
-    """Cari file model .onnx di folder models/."""
-    if not os.path.isdir(MODELS_DIR):
+
+def _get_local_model_path() -> str | None:
+    for candidate in LOCAL_MODEL_CANDIDATES:
+        if candidate and os.path.exists(candidate):
+            return candidate
+    return None
+
+def _get_active_model_row() -> dict | None:
+    """Ambil metadata model aktif dari tabel yolo_models."""
+    try:
+        return execute_query(
+            """SELECT id, file_path, updated_at
+               FROM yolo_models
+               WHERE is_active = TRUE
+               ORDER BY updated_at DESC NULLS LAST, created_at DESC
+               LIMIT 1""",
+            fetch="one",
+        )
+    except Exception as e:
+        print(f"[MODEL ERROR] Gagal query model aktif: {e}")
         return None
-    onnx_files = glob.glob(os.path.join(MODELS_DIR, "*.onnx"))
-    return onnx_files[0] if onnx_files else None
 
-def get_onnx_model():
-    """Load model ONNX menggunakan OpenCV dnn."""
-    global _yolo_net
-    if _yolo_net is not None:
+
+def _download_model_from_storage(file_path: str, model_id: str) -> str:
+    """Unduh file ONNX private dari Supabase Storage menggunakan service role key."""
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+        raise RuntimeError("SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY belum dikonfigurasi")
+
+    object_path = file_path.lstrip("/")
+    download_url = f"{SUPABASE_URL}/storage/v1/object/{MODEL_BUCKET}/{object_path}"
+    headers = {
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+    }
+
+    res = requests.get(download_url, headers=headers, timeout=60)
+    if res.status_code != 200:
+        raise RuntimeError(f"Gagal download model dari storage ({res.status_code})")
+
+    local_path = os.path.join(MODEL_CACHE_DIR, f"{model_id}.onnx")
+    with open(local_path, "wb") as f:
+        f.write(res.content)
+    return local_path
+
+
+def get_onnx_model(force_reload: bool = False):
+    """Load model ONNX dari Supabase Storage berdasarkan model aktif di database."""
+    global _yolo_net, _cached_model_id, _cached_model_updated_at, _cached_model_path
+
+    with _model_lock:
+        local_model_path = _get_local_model_path()
+
+        if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+            if _yolo_net is not None and not force_reload:
+                return _yolo_net
+            if local_model_path:
+                try:
+                    print(f"[INFO] Memuat model ONNX lokal: {local_model_path}")
+                    _yolo_net = cv2.dnn.readNetFromONNX(local_model_path)
+                    _cached_model_id = "local"
+                    _cached_model_updated_at = None
+                    _cached_model_path = local_model_path
+                except Exception as e:
+                    print(f"[MODEL ERROR] Gagal memuat model lokal: {e}")
+            else:
+                print("[MODEL ERROR] Model lokal ONNX tidak ditemukan.")
+            return _yolo_net
+
+        row = _get_active_model_row()
+        if not row or not row.get("file_path"):
+            if _yolo_net is not None and not force_reload:
+                return _yolo_net
+            if local_model_path:
+                try:
+                    print(f"[INFO] Memuat model ONNX lokal: {local_model_path}")
+                    _yolo_net = cv2.dnn.readNetFromONNX(local_model_path)
+                    _cached_model_id = "local"
+                    _cached_model_updated_at = None
+                    _cached_model_path = local_model_path
+                except Exception as e:
+                    print(f"[MODEL ERROR] Gagal memuat model lokal: {e}")
+            else:
+                print("[MODEL ERROR] Model aktif tidak ada dan model lokal ONNX tidak ditemukan.")
+            return _yolo_net
+
+        model_id = str(row["id"])
+        updated_at = row.get("updated_at")
+        updated_at_key = updated_at.isoformat() if updated_at else None
+        should_reload = (
+            force_reload
+            or _yolo_net is None
+            or _cached_model_id != model_id
+            or _cached_model_updated_at != updated_at_key
+        )
+
+        if not should_reload:
+            return _yolo_net
+
+        try:
+            local_model_path = _download_model_from_storage(row["file_path"], model_id)
+            print(f"[INFO] Memuat model ONNX aktif dari Supabase: {row['file_path']}")
+            new_net = cv2.dnn.readNetFromONNX(local_model_path)
+
+            old_path = _cached_model_path
+            _yolo_net = new_net
+            _cached_model_id = model_id
+            _cached_model_updated_at = updated_at_key
+            _cached_model_path = local_model_path
+
+            if old_path and old_path != local_model_path and os.path.exists(old_path):
+                try:
+                    os.remove(old_path)
+                except OSError:
+                    pass
+        except Exception as e:
+            print(f"[MODEL ERROR] Gagal memuat model dari Supabase: {e}")
+            if local_model_path:
+                try:
+                    print(f"[INFO] Fallback ke model ONNX lokal: {local_model_path}")
+                    _yolo_net = cv2.dnn.readNetFromONNX(local_model_path)
+                    _cached_model_id = "local"
+                    _cached_model_updated_at = None
+                    _cached_model_path = local_model_path
+                except Exception as local_error:
+                    print(f"[MODEL ERROR] Gagal memuat model lokal: {local_error}")
+
         return _yolo_net
 
-    model_path = find_onnx_model()
-    if model_path:
-        print(f"[INFO] Memuat model ONNX dari: {model_path}")
-        _yolo_net = cv2.dnn.readNetFromONNX(model_path)
-    return _yolo_net
+
+def preload_active_model():
+    """Dipanggil saat startup agar request pertama tidak memuat model dari nol."""
+    get_onnx_model(force_reload=True)
 
 def get_ocr_reader():
     """Load OCR reader jika easyocr terinstall."""
@@ -102,10 +235,16 @@ def run_onnx_detection(image_path: str) -> list[dict]:
 
         if confidence >= CONF_THRESHOLD:
             cx, cy, w, h = row[0], row[1], row[2], row[3]
-            left = int((cx - w / 2) * x_factor)
-            top = int((cy - h / 2) * y_factor)
+
+            left = int((cx - w / 2.0) * x_factor)
+            top = int((cy - h / 2.0) * y_factor)
             width = int(w * x_factor)
             height = int(h * y_factor)
+
+            left = max(0, left)
+            top = max(0, top)
+            width = max(0, min(w_img - left, width))
+            height = max(0, min(h_img - top, height))
 
             boxes.append([left, top, width, height])
             confidences.append(float(confidence))

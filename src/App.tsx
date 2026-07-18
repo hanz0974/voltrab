@@ -1,12 +1,14 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Zap, ShieldCheck, LogOut, FolderOpen, ChevronDown, Plus, Trash2, Loader2 } from 'lucide-react';
-import type { ProjectState, Floor, StepId, PartItem } from './types';
+import { Zap, ShieldCheck, LogOut, FolderOpen, ChevronDown, Plus, Trash2, Loader2, Settings } from 'lucide-react';
+import { useLocation, useNavigate } from 'react-router-dom';
+import type { ProjectState, Floor, StepId } from './types';
 import { uid } from './data';
 import { Stepper } from './components/Stepper';
 import { ProjectStep } from './components/ProjectStep';
 import { ComponentsStep } from './components/ComponentsStep';
 import { SummaryStep } from './components/SummaryStep';
 import { AuthScreen } from './components/AuthScreen';
+import { AdminDashboard } from './components/AdminDashboard';
 import { useAuth } from './lib/auth';
 import { useProjectStorage, type ProjectData, type SavedProject } from './lib/useProjectStorage';
 
@@ -31,7 +33,9 @@ function createFloor(idx: number): Floor {
 }
 
 export default function App() {
-  const { user, loading: authLoading, signOut } = useAuth();
+  const { user, loading: authLoading, signOut, isAdmin } = useAuth();
+  const location = useLocation();
+  const navigate = useNavigate();
   const {
     savedProjects,
     currentProjectId,
@@ -53,6 +57,7 @@ export default function App() {
   const [floors, setFloors] = useState<Floor[]>([createFloor(0)]);
   const [showProjectMenu, setShowProjectMenu] = useState(false);
   const [restoring, setRestoring] = useState(false);
+  const isAdminRoute = location.pathname === '/admin';
 
   // Load saved project when selected
   const restoreProject = useCallback((saved: SavedProject) => {
@@ -75,6 +80,31 @@ export default function App() {
       }
     }
   }, [savedProjects, currentProjectId, restoring, restoreProject]);
+
+  useEffect(() => {
+    if (authLoading) return;
+
+    setShowProjectMenu(false);
+    setProject(createInitialProject());
+    setFloorCount(1);
+    setFloors([createFloor(0)]);
+    setCompleted(new Set());
+    setStep('project');
+
+  }, [user?.id, authLoading]);
+
+  useEffect(() => {
+    if (authLoading) return;
+    if (location.pathname === '/' || location.pathname === '/admin') return;
+    navigate('/', { replace: true });
+  }, [authLoading, location.pathname, navigate]);
+
+  useEffect(() => {
+    if (authLoading || !user) return;
+    if (isAdminRoute && !isAdmin) {
+      navigate('/', { replace: true });
+    }
+  }, [authLoading, user, isAdmin, isAdminRoute, navigate]);
 
   // Debounced auto-save on state change
   useEffect(() => {
@@ -190,10 +220,32 @@ export default function App() {
     return <AuthScreen />;
   }
 
+  if (isAdminRoute) {
+    if (!isAdmin) {
+      return (
+        <div className="flex min-h-screen items-center justify-center bg-slate-50">
+          <Loader2 className="h-8 w-8 animate-spin text-brand-600" />
+        </div>
+      );
+    }
+
+    return (
+      <AdminDashboard
+        user={user}
+        isAdmin={isAdmin}
+        onSignOut={() => {
+          void signOut();
+          navigate('/', { replace: true });
+        }}
+        onBackToApp={() => navigate('/')}
+      />
+    );
+  }
+
   return (
     <div className="min-h-screen bg-slate-50">
       {/* Header */}
-      <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/80 backdrop-blur-lg print:hidden">
+      <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/90 backdrop-blur-lg print:hidden">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3 sm:px-6">
           <div className="flex items-center gap-2.5">
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-brand-500 to-brand-700 text-white shadow-glow">
@@ -204,13 +256,13 @@ export default function App() {
               <p className="text-xs text-slate-500">RAB Kelistrikan & Deteksi SLD</p>
             </div>
           </div>
-          <div className="flex items-center gap-3">
+
+          <div className="flex items-center gap-2 sm:gap-3">
             <div className="hidden items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700 sm:flex">
               <ShieldCheck className="h-3.5 w-3.5" />
               YOLOv8 + OCR
             </div>
 
-            {/* Project switcher */}
             <div className="relative">
               <button
                 onClick={() => setShowProjectMenu(!showProjectMenu)}
@@ -281,14 +333,33 @@ export default function App() {
               )}
             </div>
 
-            {/* User menu */}
             <div className="flex items-center gap-2">
+              {isAdmin && (
+                <button
+                  onClick={() => navigate('/admin')}
+                  className="flex h-9 w-9 items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-brand-50 hover:text-brand-600"
+                  aria-label="Admin Dashboard"
+                  title="Admin Dashboard"
+                >
+                  <Settings className="h-4 w-4" />
+                </button>
+              )}
               <div className="hidden text-right sm:block">
                 <div className="text-xs font-medium text-slate-700">{user.email}</div>
-                <div className="text-xs text-slate-400">Akun Aktif</div>
+                <div className="flex items-center gap-1.5 text-xs text-slate-400">
+                  {isAdmin && (
+                    <span className="inline-flex items-center gap-1 rounded bg-brand-100 px-1.5 py-0.5 text-[10px] font-medium text-brand-700">
+                      Admin
+                    </span>
+                  )}
+                  <span>Akun Aktif</span>
+                </div>
               </div>
               <button
-                onClick={signOut}
+                onClick={() => {
+                  void signOut();
+                  navigate('/', { replace: true });
+                }}
                 className="flex h-9 w-9 items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-rose-50 hover:text-rose-600"
                 aria-label="Keluar"
                 title="Keluar"
@@ -358,6 +429,7 @@ export default function App() {
         )}
         {step === 'components' && (
           <ComponentsStep
+            projectName={project.name}
             floors={floors}
             onChange={setFloors}
             onNext={advance}
