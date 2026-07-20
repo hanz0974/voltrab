@@ -9,6 +9,7 @@ import {
   Loader2,
   AlertCircle,
   Info,
+  ExternalLink,
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 
@@ -304,25 +305,80 @@ export function ModelsManager() {
         </div>
       )}
 
-      <div className="mt-6 rounded-xl border border-sky-200 bg-sky-50 p-5">
-        <div className="flex gap-3">
-          <Info className="h-5 w-5 flex-shrink-0 text-sky-600" />
-          <div>
-            <h4 className="font-medium text-sky-900">Format Model YOLOv8</h4>
-            <p className="mt-1 text-sm text-sky-700">
-              Model harus dalam format ONNX (.onnx) yang diekspor dari YOLOv8. Pastikan model sudah
-              dilatih untuk mendeteksi komponen kelistrikan seperti MCB, MCCB, RCCB, dan lainnya.
-            </p>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <span className="rounded bg-sky-100 px-2 py-1 text-xs font-medium text-sky-700">
-                .onnx
-              </span>
-              <span className="rounded bg-sky-100 px-2 py-1 text-xs font-medium text-sky-700">
-                YOLOv8n/s/m/l/x
-              </span>
-              <span className="rounded bg-sky-100 px-2 py-1 text-xs font-medium text-sky-700">
-                640x640 input
-              </span>
+      <div className="mt-8 space-y-4">
+        <h3 className="text-lg font-semibold text-slate-900">Panduan Penyiapan Model</h3>
+        <div className="grid gap-4 md:grid-cols-2">
+          <div className="flex flex-col justify-between rounded-xl border border-indigo-200 bg-indigo-50/60 p-5">
+            <div className="flex items-start gap-3">
+              <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-indigo-100 text-indigo-600">
+                <ExternalLink className="h-5 w-5" />
+              </div>
+              <div>
+                <h4 className="font-semibold text-indigo-900">1. Anotasi Dataset dengan Roboflow</h4>
+                <p className="mt-1 text-sm leading-relaxed text-indigo-700">
+                  Sebelum melakukan training, siapkan dataset dan lakukan anotasi (labelling/bounding box) pada gambar komponen kelistrikan secara online menggunakan website <strong>Roboflow</strong>.
+                </p>
+              </div>
+            </div>
+            <div className="mt-4 pt-2">
+              <a
+                href="https://roboflow.com"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-indigo-700"
+              >
+                Buka Roboflow
+                <ExternalLink className="h-3.5 w-3.5" />
+              </a>
+            </div>
+          </div>
+
+          <div className="flex flex-col justify-between rounded-xl border border-amber-200 bg-amber-50/60 p-5">
+            <div className="flex items-start gap-3">
+              <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-amber-100 text-amber-600">
+                <Brain className="h-5 w-5" />
+              </div>
+              <div>
+                <h4 className="font-semibold text-amber-900">2. Training Model di Google Colab</h4>
+                <p className="mt-1 text-sm leading-relaxed text-amber-700">
+                  Latih model YOLOv8 menggunakan dataset dari Roboflow dan ekspor hasilnya ke format ONNX melalui notebook <strong>Google Colab</strong> yang telah disiapkan.
+                </p>
+              </div>
+            </div>
+            <div className="mt-4 pt-2">
+              <a
+                href="https://colab.research.google.com/drive/1uWeShtI6npyIX12_jcIC73m1Yk6s1kLS#scrollTo=tdSMcABDNKW-"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 rounded-lg bg-amber-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-amber-700"
+              >
+                Buka Google Colab
+                <ExternalLink className="h-3.5 w-3.5" />
+              </a>
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-sky-200 bg-sky-50 p-5">
+          <div className="flex gap-3">
+            <Info className="h-5 w-5 flex-shrink-0 text-sky-600" />
+            <div>
+              <h4 className="font-medium text-sky-900">Format Model YOLOv8</h4>
+              <p className="mt-1 text-sm text-sky-700">
+                Model harus dalam format ONNX (.onnx) yang diekspor dari YOLOv8. Pastikan model sudah
+                dilatih untuk mendeteksi komponen kelistrikan.
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <span className="rounded bg-sky-100 px-2 py-1 text-xs font-medium text-sky-700">
+                  .onnx
+                </span>
+                <span className="rounded bg-sky-100 px-2 py-1 text-xs font-medium text-sky-700">
+                  YOLOv8n/s/m/l/x
+                </span>
+                <span className="rounded bg-sky-100 px-2 py-1 text-xs font-medium text-sky-700">
+                  640x640 input
+                </span>
+              </div>
             </div>
           </div>
         </div>
