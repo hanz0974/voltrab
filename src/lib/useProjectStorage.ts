@@ -13,7 +13,6 @@ export interface SavedProject {
 export interface ProjectData {
   project: ProjectState;
   floors: Floor[];
-  floorCount: number;
   step: StepId;
   completed: StepId[];
 }
@@ -38,6 +37,8 @@ export interface SaveRabParams {
   totalItems: number;
   totalQty: number;
 }
+
+export type ProjectSaveStatus = 'idle' | 'saving' | 'saved' | 'error';
 
 function mergeLatestProjects(projects: SavedProject[]): SavedProject[] {
   const latestByName = new Map<string, SavedProject>();
@@ -78,7 +79,15 @@ export function useProjectStorage(userId: string | undefined) {
   const [savedProjects, setSavedProjects] = useState<SavedProject[]>([]);
   const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
   const [loadingProjects, setLoadingProjects] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<ProjectSaveStatus>('idle');
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingSave = useRef<{ data: ProjectData; projectId: string | null } | null>(null);
+  const currentProjectIdRef = useRef<string | null>(null);
+  const projectCreationInFlight = useRef<Promise<string | null> | null>(null);
+
+  useEffect(() => {
+    currentProjectIdRef.current = currentProjectId;
+  }, [currentProjectId]);
 
   const loadProjects = useCallback(async () => {
     if (!userId) return;
@@ -92,14 +101,16 @@ export function useProjectStorage(userId: string | undefined) {
     if (!error && data) {
       const dedupedProjects = mergeLatestProjects(data as unknown as SavedProject[]);
       setSavedProjects(dedupedProjects);
-      if (dedupedProjects.length > 0 && !currentProjectId) {
-        setCurrentProjectId(dedupedProjects[0].id);
+      if (dedupedProjects.length > 0) {
+        setCurrentProjectId((current) => current ?? dedupedProjects[0].id);
       }
     }
     setLoadingProjects(false);
-  }, [userId, currentProjectId]);
+  }, [userId]);
 
   useEffect(() => {
+    currentProjectIdRef.current = null;
+    projectCreationInFlight.current = null;
     if (userId) {
       setCurrentProjectId(null);
       loadProjects();
@@ -107,66 +118,114 @@ export function useProjectStorage(userId: string | undefined) {
       setSavedProjects([]);
       setCurrentProjectId(null);
     }
-  }, [userId]);
+  }, [userId, loadProjects]);
 
   const saveProject = useCallback(async (data: ProjectData, projectId: string | null) => {
     if (!userId) return null;
 
+    setSaveStatus('saving');
+
     const name = data.project.name || 'Project Tanpa Nama';
     const payload = data as unknown as Record<string, unknown>;
+    let effectiveProjectId = projectId ?? currentProjectIdRef.current;
 
-    if (projectId) {
+    // Ketikan berikutnya dapat masuk saat INSERT pertama masih berlangsung.
+    // Tunggu hasil INSERT tersebut agar penyimpanan selanjutnya menjadi UPDATE.
+    if (!effectiveProjectId && projectCreationInFlight.current) {
+      effectiveProjectId = await projectCreationInFlight.current;
+    }
+
+    if (effectiveProjectId) {
       const { data: updated, error } = await supabase
         .from('user_projects')
         .update({ project_data: payload, name, updated_at: new Date().toISOString() })
-        .eq('id', projectId)
-        .select('id')
+        .eq('id', effectiveProjectId)
+        .eq('user_id', userId)
+        .select('id, name, project_data, updated_at, created_at')
         .maybeSingle();
 
-      if (!error && updated) return updated.id;
+      if (!error && updated) {
+        const saved = updated as unknown as SavedProject;
+        setSavedProjects((previous) => mergeLatestProjects([
+          saved,
+          ...previous.filter((item) => item.id !== saved.id),
+        ]));
+        setSaveStatus('saved');
+        return updated.id;
+      }
+
+      setSaveStatus('error');
+      return null;
     }
 
-    const { data: inserted, error } = await supabase
-      .from('user_projects')
-      .insert({ user_id: userId, project_data: payload, name })
-      .select('id')
-      .maybeSingle();
+    const creationPromise = (async () => {
+      const { data: inserted, error } = await supabase
+        .from('user_projects')
+        .insert({ user_id: userId, project_data: payload, name })
+        .select('id, name, project_data, updated_at, created_at')
+        .maybeSingle();
 
-    if (!error && inserted) {
-      setCurrentProjectId(inserted.id);
-      return inserted.id;
+      if (!error && inserted) {
+        const saved = inserted as unknown as SavedProject;
+        currentProjectIdRef.current = saved.id;
+        setCurrentProjectId(saved.id);
+        setSavedProjects((previous) => mergeLatestProjects([saved, ...previous]));
+        setSaveStatus('saved');
+        return saved.id;
+      }
+
+      setSaveStatus('error');
+      return null;
+    })();
+
+    projectCreationInFlight.current = creationPromise;
+    try {
+      return await creationPromise;
+    } finally {
+      if (projectCreationInFlight.current === creationPromise) {
+        projectCreationInFlight.current = null;
+      }
     }
-
-    return projectId;
   }, [userId]);
 
   const debouncedSave = useCallback((data: ProjectData, projectId: string | null) => {
     if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => {
-      saveProject(data, projectId);
+    pendingSave.current = { data, projectId };
+    setSaveStatus('saving');
+    saveTimer.current = setTimeout(async () => {
+      const pending = pendingSave.current;
+      pendingSave.current = null;
+      saveTimer.current = null;
+      if (pending) await saveProject(pending.data, pending.projectId);
     }, 1000);
   }, [saveProject]);
 
-  const flushPendingSave = useCallback(() => {
+  const flushPendingSave = useCallback(async () => {
     if (saveTimer.current) {
       clearTimeout(saveTimer.current);
       saveTimer.current = null;
     }
-  }, []);
+    const pending = pendingSave.current;
+    pendingSave.current = null;
+    if (pending) await saveProject(pending.data, pending.projectId);
+  }, [saveProject]);
 
-  const deleteProject = useCallback(async (projectId: string) => {
+  const deleteProject = useCallback(async (projectId: string): Promise<boolean> => {
     const { error } = await supabase
       .from('user_projects')
       .delete()
-      .eq('id', projectId);
+      .eq('id', projectId)
+      .eq('user_id', userId);
 
     if (!error) {
       setSavedProjects((prev) => prev.filter((p) => p.id !== projectId));
       if (currentProjectId === projectId) {
         setCurrentProjectId(null);
       }
+      return true;
     }
-  }, [currentProjectId]);
+    return false;
+  }, [currentProjectId, userId]);
 
   const selectProject = useCallback((projectId: string) => {
     setCurrentProjectId(projectId);
@@ -186,7 +245,7 @@ export function useProjectStorage(userId: string | undefined) {
       }
       return null;
     },
-    [],
+    [userId],
   );
 
   const saveRabReport = useCallback(
@@ -220,6 +279,7 @@ export function useProjectStorage(userId: string | undefined) {
     savedProjects,
     currentProjectId,
     loadingProjects,
+    saveStatus,
     loadProjects,
     saveProject,
     debouncedSave,

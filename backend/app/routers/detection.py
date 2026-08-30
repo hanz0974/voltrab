@@ -1,17 +1,19 @@
 """
-Router deteksi komponen SLD menggunakan model ONNX (OpenCV) + OCR.
+Router deteksi komponen SLD menggunakan model ONNX (OpenCV).
 Menerima upload gambar, menjalankan inferensi, dan mengembalikan hasil deteksi.
 """
 import os
 import uuid
 import base64
+import ast
 import threading
 import tempfile
 import cv2
 import numpy as np
+import onnxruntime as ort
 import requests
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, status
-from app.core.security import decode_access_token
+from app.core.security import verify_supabase_access_token
 from app.core.config import UPLOAD_DIR
 from app.core.database import execute_query
 from app.models.schemas import DetectionResponse, DetectionResultItem
@@ -21,7 +23,7 @@ router = APIRouter(prefix="/detect", tags=["detection"])
 # --- DAFTAR KELAS & MAPPING BARU ---
 # Sesuai dengan yang ada di script lokal kamu
 CLASSES = [
-    'RMDL PL-C 13W', 'exit lamp', 'local switch 1 way 1 gang', 'local switch 2 way 1 gang', 'reflector and louvre m5', 'stage lamp gms light 1xtl5 14W'
+    'RMDL PL-C 13W', 'exit lamp', 'local switch 1 way 1 gang', 'local switch 2 way 1 gang', 'fitting', 'stage lamp gms light 1xtl5 14W'
 ]
 
 # Sesuaikan value (komponen id) ini dengan yang ada di database katalogmu
@@ -31,7 +33,8 @@ LABEL_TO_COMPONENT = {
     "local switch 2 way 1 gang": "c-switch-2w1g",
     "reflector and louvre m5": "c-reflector-m5",
     "RMDL PL-C 13W": "c-rmdl-plc",
-    "stage lamp gms light 1xtl5 14W": "c-stage-lamp"
+    "stage lamp gms light 1xtl5 14W": "c-stage-lamp",
+    "fitting" : "c-fitting",
 }
 
 from app.core.config import SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
@@ -39,40 +42,46 @@ from app.core.config import SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
 MODEL_BUCKET = "yolo-models"
 MODEL_CACHE_DIR = os.path.join(tempfile.gettempdir(), "voltrab_models")
 os.makedirs(MODEL_CACHE_DIR, exist_ok=True)
-LOCAL_MODEL_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "models"))
-LOCAL_MODEL_CANDIDATES = [
-    os.getenv("ONNX_MODEL_PATH", ""),
-    os.path.join(LOCAL_MODEL_DIR, "yolov8 (3).onnx"),
-    os.path.join(LOCAL_MODEL_DIR, "yolov8_sld.onnx"),
-    os.path.join(LOCAL_MODEL_DIR, "yolov8n.onnx"),
-]
 
 CONF_THRESHOLD = 0.50
 IOU_THRESHOLD = 0.40
 
-# Lazy-load model OpenCV dan OCR engine
+# Lazy-load model OpenCV
 _yolo_net = None
-_ocr_reader = None
 _model_lock = threading.Lock()
 _cached_model_id = None
 _cached_model_updated_at = None
 _cached_model_path = None
+_cached_model_classes = None
 
 
-def _get_local_model_path() -> str | None:
-    for candidate in LOCAL_MODEL_CANDIDATES:
-        if candidate and os.path.exists(candidate):
-            return candidate
+def _read_onnx_class_names(model_path: str) -> list[str] | None:
+    """Baca urutan class yang ditanam Ultralytics pada metadata ONNX."""
+    try:
+        metadata = ort.InferenceSession(
+            model_path,
+            providers=["CPUExecutionProvider"],
+        ).get_modelmeta().custom_metadata_map
+        raw_names = metadata.get("names")
+        if not raw_names:
+            return None
+        parsed = ast.literal_eval(raw_names)
+        if isinstance(parsed, dict):
+            ordered = [str(parsed[key]) for key in sorted(parsed, key=lambda value: int(value))]
+            return ordered or None
+        if isinstance(parsed, list):
+            return [str(value) for value in parsed] or None
+    except (ValueError, SyntaxError, TypeError, RuntimeError):
+        return None
     return None
 
 def _get_active_model_row() -> dict | None:
     """Ambil metadata model aktif dari tabel yolo_models."""
     try:
         return execute_query(
-            """SELECT id, file_path, updated_at
+            """SELECT id, file_path, updated_at, is_active
                FROM yolo_models
-               WHERE is_active = TRUE
-               ORDER BY updated_at DESC NULLS LAST, created_at DESC
+               ORDER BY is_active DESC, updated_at DESC NULLS LAST, created_at DESC
                LIMIT 1""",
             fetch="one",
         )
@@ -104,44 +113,31 @@ def _download_model_from_storage(file_path: str, model_id: str) -> str:
 
 
 def get_onnx_model(force_reload: bool = False):
-    """Load model ONNX dari Supabase Storage berdasarkan model aktif di database."""
-    global _yolo_net, _cached_model_id, _cached_model_updated_at, _cached_model_path
+    """Load model ONNX aktif dari Supabase Storage berdasarkan database."""
+    global _yolo_net, _cached_model_id, _cached_model_updated_at, _cached_model_path, _cached_model_classes
 
     with _model_lock:
-        local_model_path = _get_local_model_path()
-
         if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
-            if _yolo_net is not None and not force_reload:
-                return _yolo_net
-            if local_model_path:
-                try:
-                    print(f"[INFO] Memuat model ONNX lokal: {local_model_path}")
-                    _yolo_net = cv2.dnn.readNetFromONNX(local_model_path)
-                    _cached_model_id = "local"
-                    _cached_model_updated_at = None
-                    _cached_model_path = local_model_path
-                except Exception as e:
-                    print(f"[MODEL ERROR] Gagal memuat model lokal: {e}")
-            else:
-                print("[MODEL ERROR] Model lokal ONNX tidak ditemukan.")
-            return _yolo_net
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Konfigurasi Supabase belum tersedia. Model hanya bisa diambil dari Supabase.",
+            )
 
         row = _get_active_model_row()
-        if not row or not row.get("file_path"):
-            if _yolo_net is not None and not force_reload:
-                return _yolo_net
-            if local_model_path:
-                try:
-                    print(f"[INFO] Memuat model ONNX lokal: {local_model_path}")
-                    _yolo_net = cv2.dnn.readNetFromONNX(local_model_path)
-                    _cached_model_id = "local"
-                    _cached_model_updated_at = None
-                    _cached_model_path = local_model_path
-                except Exception as e:
-                    print(f"[MODEL ERROR] Gagal memuat model lokal: {e}")
-            else:
-                print("[MODEL ERROR] Model aktif tidak ada dan model lokal ONNX tidak ditemukan.")
-            return _yolo_net
+        if not row:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Belum ada model di Supabase. Silakan upload model ONNX terlebih dahulu.",
+            )
+
+        if not row.get("file_path"):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Model di Supabase belum punya file_path yang valid.",
+            )
+
+        if not row.get("is_active"):
+            print("[MODEL WARNING] Tidak ada model aktif; memakai model terbaru yang tersedia di Supabase.")
 
         model_id = str(row["id"])
         updated_at = row.get("updated_at")
@@ -160,12 +156,14 @@ def get_onnx_model(force_reload: bool = False):
             local_model_path = _download_model_from_storage(row["file_path"], model_id)
             print(f"[INFO] Memuat model ONNX aktif dari Supabase: {row['file_path']}")
             new_net = cv2.dnn.readNetFromONNX(local_model_path)
+            model_classes = _read_onnx_class_names(local_model_path)
 
             old_path = _cached_model_path
             _yolo_net = new_net
             _cached_model_id = model_id
             _cached_model_updated_at = updated_at_key
             _cached_model_path = local_model_path
+            _cached_model_classes = model_classes
 
             if old_path and old_path != local_model_path and os.path.exists(old_path):
                 try:
@@ -173,42 +171,25 @@ def get_onnx_model(force_reload: bool = False):
                 except OSError:
                     pass
         except Exception as e:
-            print(f"[MODEL ERROR] Gagal memuat model dari Supabase: {e}")
-            if local_model_path:
-                try:
-                    print(f"[INFO] Fallback ke model ONNX lokal: {local_model_path}")
-                    _yolo_net = cv2.dnn.readNetFromONNX(local_model_path)
-                    _cached_model_id = "local"
-                    _cached_model_updated_at = None
-                    _cached_model_path = local_model_path
-                except Exception as local_error:
-                    print(f"[MODEL ERROR] Gagal memuat model lokal: {local_error}")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"Gagal memuat model aktif dari Supabase: {e}",
+            )
 
         return _yolo_net
 
 
 def preload_active_model():
     """Dipanggil saat startup agar request pertama tidak memuat model dari nol."""
-    get_onnx_model(force_reload=True)
-
-def get_ocr_reader():
-    """Load OCR reader jika easyocr terinstall."""
-    global _ocr_reader
-    if _ocr_reader is not None:
-        return _ocr_reader
     try:
-        import easyocr
-        _ocr_reader = easyocr.Reader(["en"], gpu=False)
-    except Exception:
-        _ocr_reader = None
-    return _ocr_reader
+        get_onnx_model(force_reload=True)
+    except HTTPException as exc:
+        print(f"[MODEL WARNING] Preload model dilewati: {exc.detail}")
+
 
 def run_onnx_detection(image_path: str) -> list[dict]:
     """Jalankan inferensi YOLOv8 OpenCV dan format bbox ke persentase (0-100)."""
     net = get_onnx_model()
-    if net is None:
-        print("[ERROR] Model ONNX tidak ditemukan atau gagal dimuat.")
-        return []
 
     frame = cv2.imread(image_path)
     if frame is None:
@@ -257,13 +238,14 @@ def run_onnx_detection(image_path: str) -> list[dict]:
     if len(indices) > 0:
         for index in indices.flatten():
             c_id = class_ids[index]
-            label = CLASSES[c_id] if c_id < len(CLASSES) else f"Unknown-{c_id}"
+            model_classes = _cached_model_classes or CLASSES
+            label = model_classes[c_id] if c_id < len(model_classes) else f"Unknown-{c_id}"
 
             box = boxes[index]
             left, top, width, height = box[0], box[1], box[2], box[3]
             
             # --- KONVERSI PIXEL KE PERSENTASE (0 - 100%) ---
-            # Dibutuhkan agar OCR dan Frontend React bisa membaca kordinat dengan benar
+            # Dibutuhkan agar Frontend React bisa membaca kordinat dengan benar
             percent_x = max(0, (left / w_img) * 100)
             percent_y = max(0, (top / h_img) * 100)
             percent_w = min(100 - percent_x, (width / w_img) * 100)
@@ -282,42 +264,14 @@ def run_onnx_detection(image_path: str) -> list[dict]:
 
     return detections
 
-def run_ocr_on_region(image_path: str, bbox: dict) -> str | None:
-    """Jalankan OCR pada region gambar yang di-crop berdasarkan bbox (persentase)."""
-    reader = get_ocr_reader()
-    if reader is None:
-        return None
-
-    try:
-        img = cv2.imread(image_path)
-        if img is None:
-            return None
-        h, w = img.shape[:2]
-        
-        # Bbox dikalikan w dan h karena formatnya persentase (0-100)
-        x1 = int((bbox["x"] / 100) * w)
-        y1 = int((bbox["y"] / 100) * h)
-        x2 = int(((bbox["x"] + bbox["width"]) / 100) * w)
-        y2 = int(((bbox["y"] + bbox["height"]) / 100) * h)
-        
-        crop = img[max(0, y1):min(h, y2), max(0, x1):min(w, x2)]
-        if crop.size == 0:
-            return None
-            
-        results = reader.readtext(crop)
-        texts = [text for (_, text, _) in results]
-        return " ".join(texts) if texts else None
-    except Exception as e:
-        print(f"[OCR ERROR] {e}")
-        return None
 
 @router.post("", response_model=DetectionResponse)
 async def detect_components(
     file: UploadFile = File(...),
-    payload: dict = Depends(decode_access_token),
+    payload: dict = Depends(verify_supabase_access_token),
 ):
     """
-    Upload gambar SLD dan jalankan deteksi YOLO (OpenCV) + OCR.
+    Upload gambar SLD dan jalankan deteksi YOLO (OpenCV).
     """
     if not payload:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token tidak valid")
@@ -336,10 +290,8 @@ async def detect_components(
     # 1. Jalankan Deteksi ONNX
     onnx_results = run_onnx_detection(file_path)
 
-    # 2. Iterasi Hasil Deteksi untuk OCR & Pencocokan ID Komponen
+    # 2. Iterasi Hasil Deteksi untuk Pencocokan ID Komponen
     for det in onnx_results:
-        ocr_text = run_ocr_on_region(file_path, det["bbox"])
-        det["ocr_text"] = ocr_text
         det["matched_component_id"] = LABEL_TO_COMPONENT.get(det["label"])
 
     # 3. Konversi Gambar Asli ke Base64 (Untuk Response)

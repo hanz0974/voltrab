@@ -1,4 +1,4 @@
-RMDL PL-C 13W
+fitting
 exit lamp
 local switch 1 way 1 gang
 local switch 2 way 1 gang

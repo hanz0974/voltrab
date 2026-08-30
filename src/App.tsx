@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Zap, ShieldCheck, LogOut, FolderOpen, ChevronDown, Plus, Trash2, Loader2, Settings } from 'lucide-react';
+import { Zap, LogOut, FolderOpen, ChevronDown, Plus, Trash2, Loader2, Settings, CheckCircle, AlertTriangle } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import type { ProjectState, Floor, StepId } from './types';
 import { uid } from './data';
@@ -9,6 +9,7 @@ import { ComponentsStep } from './components/ComponentsStep';
 import { SummaryStep } from './components/SummaryStep';
 import { AuthScreen } from './components/AuthScreen';
 import { AdminDashboard } from './components/AdminDashboard';
+import { Modal } from './components/Modal';
 import { useAuth } from './lib/auth';
 import { useProjectStorage, type ProjectData, type SavedProject } from './lib/useProjectStorage';
 
@@ -40,6 +41,7 @@ export default function App() {
     savedProjects,
     currentProjectId,
     loadingProjects,
+    saveStatus,
     loadProjects,
     saveProject,
     debouncedSave,
@@ -53,10 +55,12 @@ export default function App() {
   const [step, setStep] = useState<StepId>('project');
   const [completed, setCompleted] = useState<Set<StepId>>(new Set());
   const [project, setProject] = useState<ProjectState>(createInitialProject);
-  const [floorCount, setFloorCount] = useState(1);
   const [floors, setFloors] = useState<Floor[]>([createFloor(0)]);
   const [showProjectMenu, setShowProjectMenu] = useState(false);
   const [restoring, setRestoring] = useState(false);
+  const [pendingDeleteProject, setPendingDeleteProject] = useState<SavedProject | null>(null);
+  const [deletingProject, setDeletingProject] = useState(false);
+  const [deleteProjectError, setDeleteProjectError] = useState<string | null>(null);
   const isAdminRoute = location.pathname === '/admin';
 
   // Load saved project when selected
@@ -65,7 +69,6 @@ export default function App() {
     const data = saved.project_data;
     setProject(data.project ?? createInitialProject());
     setFloors(data.floors ?? [createFloor(0)]);
-    setFloorCount(data.floorCount ?? 1);
     setStep(data.step ?? 'project');
     setCompleted(new Set(data.completed ?? []));
     setRestoring(false);
@@ -86,7 +89,6 @@ export default function App() {
 
     setShowProjectMenu(false);
     setProject(createInitialProject());
-    setFloorCount(1);
     setFloors([createFloor(0)]);
     setCompleted(new Set());
     setStep('project');
@@ -108,30 +110,18 @@ export default function App() {
 
   // Debounced auto-save on state change
   useEffect(() => {
-    if (!user || !currentProjectId || restoring) return;
+    if (!user || restoring) return;
+    if (!currentProjectId && !project.name.trim()) return;
     const data: ProjectData = {
       project,
       floors,
-      floorCount,
       step,
       completed: Array.from(completed),
     };
     debouncedSave(data, currentProjectId);
-  }, [project, floors, floorCount, step, completed, user, currentProjectId, restoring, debouncedSave]);
+  }, [project, floors, step, completed, user, currentProjectId, restoring, debouncedSave]);
 
   const updateProject = (patch: Partial<ProjectState>) => setProject((p) => ({ ...p, ...patch }));
-
-  const applyFloorCount = (count: number) => {
-    setFloorCount(count);
-    setFloors((prev) => {
-      if (count === prev.length) return prev;
-      if (count > prev.length) {
-        const additions = Array.from({ length: count - prev.length }, (_, i) => createFloor(prev.length + i));
-        return [...prev, ...additions];
-      }
-      return prev.slice(0, count);
-    });
-  };
 
   const goToStep = (target: StepId) => setStep(target);
 
@@ -148,19 +138,17 @@ export default function App() {
 
   const restart = () => {
     setProject(createInitialProject());
-    setFloorCount(1);
     setFloors([createFloor(0)]);
     setCompleted(new Set());
     setStep('project');
   };
 
   const startNewProject = async () => {
-    flushPendingSave();
+    await flushPendingSave();
     restart();
     const data: ProjectData = {
       project: createInitialProject(),
       floors: [createFloor(0)],
-      floorCount: 1,
       step: 'project',
       completed: [],
     };
@@ -173,7 +161,7 @@ export default function App() {
   };
 
   const handleSelectProject = async (proj: SavedProject) => {
-    flushPendingSave();
+    await flushPendingSave();
     selectProject(proj.id);
     const latestData = await fetchAndRestoreProject(proj.id);
     if (latestData) {
@@ -182,20 +170,60 @@ export default function App() {
     setShowProjectMenu(false);
   };
 
-  const handleDeleteProject = async (e: React.MouseEvent, projId: string) => {
+  const requestDeleteProject = (e: React.MouseEvent, savedProject: SavedProject) => {
     e.stopPropagation();
-    await deleteProject(projId);
-    if (currentProjectId === projId) {
-      const remaining = savedProjects.filter((p) => p.id !== projId);
+    setDeleteProjectError(null);
+    setPendingDeleteProject(savedProject);
+    setShowProjectMenu(false);
+  };
+
+  const handleDeleteProject = async () => {
+    if (!pendingDeleteProject || deletingProject) return;
+    setDeletingProject(true);
+    setDeleteProjectError(null);
+    const projectToDelete = pendingDeleteProject;
+    await flushPendingSave();
+    const deleted = await deleteProject(projectToDelete.id);
+
+    if (!deleted) {
+      setDeleteProjectError('Project gagal dihapus. Periksa koneksi lalu coba lagi.');
+      setDeletingProject(false);
+      return;
+    }
+
+    if (currentProjectId === projectToDelete.id) {
+      const remaining = savedProjects.filter((p) => p.id !== projectToDelete.id);
       if (remaining.length > 0) {
-        handleSelectProject(remaining[0]);
+        await handleSelectProject(remaining[0]);
       } else {
         restart();
       }
     }
+    setDeletingProject(false);
+    setPendingDeleteProject(null);
   };
 
   const handleSaveRab = useCallback(async () => {
+    await flushPendingSave();
+
+    const projectData: ProjectData = {
+      project,
+      floors,
+      step,
+      completed: Array.from(completed),
+    };
+    const savedProjectId = await saveProject(projectData, currentProjectId);
+
+    if (!savedProjectId) {
+      return {
+        success: false,
+        error: 'Project gagal disimpan ke daftar project. Periksa koneksi lalu coba lagi.',
+      };
+    }
+
+    selectProject(savedProjectId);
+    await loadProjects();
+
     const allParts = floors.flatMap((f) => f.rooms.flatMap((r) => r.parts));
     const grandTotal = allParts.reduce((s, p) => s + p.price * p.quantity, 0);
     const totalQty = allParts.reduce((s, p) => s + p.quantity, 0);
@@ -206,7 +234,18 @@ export default function App() {
       totalItems: allParts.length,
       totalQty,
     });
-  }, [project, floors, saveRabReport]);
+  }, [
+    completed,
+    currentProjectId,
+    floors,
+    flushPendingSave,
+    loadProjects,
+    project,
+    saveProject,
+    saveRabReport,
+    selectProject,
+    step,
+  ]);
 
   if (authLoading) {
     return (
@@ -258,11 +297,22 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-2 sm:gap-3">
-            <div className="hidden items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700 sm:flex">
-              <ShieldCheck className="h-3.5 w-3.5" />
-              YOLOv8 + OCR
+            <div
+              className={`flex min-w-4 items-center gap-1.5 text-xs ${
+                saveStatus === 'error' ? 'text-rose-600' : 'text-slate-500'
+              }`}
+              role="status"
+              aria-live="polite"
+            >
+              {saveStatus === 'saving' && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+              {saveStatus === 'saved' && <CheckCircle className="h-3.5 w-3.5 text-emerald-600" />}
+              {saveStatus === 'error' && <AlertTriangle className="h-3.5 w-3.5" />}
+              <span className="hidden sm:inline">
+                {saveStatus === 'saving' && 'Menyimpan...'}
+                {saveStatus === 'saved' && 'Tersimpan'}
+                {saveStatus === 'error' && 'Gagal menyimpan'}
+              </span>
             </div>
-
             <div className="relative">
               <button
                 onClick={() => setShowProjectMenu(!showProjectMenu)}
@@ -320,8 +370,10 @@ export default function App() {
                             </div>
                           </div>
                           <button
-                            onClick={(e) => handleDeleteProject(e, proj.id)}
-                            className="rounded p-1 text-slate-300 opacity-0 transition-all hover:bg-rose-50 hover:text-rose-500 group-hover:opacity-100"
+                            onClick={(e) => requestDeleteProject(e, proj)}
+                            className="rounded p-1.5 text-slate-400 opacity-100 transition-all hover:bg-rose-50 hover:text-rose-500 sm:opacity-0 sm:group-hover:opacity-100 sm:focus:opacity-100"
+                            aria-label={`Hapus project ${proj.name}`}
+                            title={`Hapus ${proj.name}`}
                           >
                             <Trash2 className="h-3.5 w-3.5" />
                           </button>
@@ -391,7 +443,7 @@ export default function App() {
               </h2>
               <p className="mt-4 text-base text-brand-100">
                 Buat Rencana Anggaran Biaya kelistrikan profesional. Isi manual dari katalog, atau unggah diagram
-                SLD dan biarkan YOLOv8 + OCR mendeteksi komponen secara otomatis.
+                SLD dan biarkan sistem mendeteksi komponen secara otomatis.
               </p>
               <div className="mt-6 flex flex-wrap gap-6 text-sm text-brand-100">
                 <div className="flex items-center gap-2">
@@ -422,8 +474,6 @@ export default function App() {
           <ProjectStep
             project={project}
             onChange={updateProject}
-            floorCount={floorCount}
-            onFloorCountChange={applyFloorCount}
             onNext={advance}
           />
         )}
@@ -434,8 +484,6 @@ export default function App() {
             onChange={setFloors}
             onNext={advance}
             onBack={goBack}
-            floorCount={floorCount}
-            onFloorCountChange={applyFloorCount}
           />
         )}
         {step === 'summary' && (
@@ -443,6 +491,8 @@ export default function App() {
             project={project}
             floors={floors}
             onBack={goBack}
+            onEditProject={() => goToStep('project')}
+            onEditComponents={() => goToStep('components')}
             onRestart={restart}
             onSaveRab={handleSaveRab}
           />
@@ -457,9 +507,51 @@ export default function App() {
             <span className="font-medium text-slate-600">VoltRAB</span>
             <span>— Perhitungan RAB Kelistrikan</span>
           </div>
-          <p>Backend: FastAPI · Deteksi: YOLOv8 + OCR</p>
         </div>
       </footer>
+
+      <Modal
+        open={pendingDeleteProject !== null}
+        onClose={() => {
+          if (!deletingProject) {
+            setPendingDeleteProject(null);
+            setDeleteProjectError(null);
+          }
+        }}
+        title="Hapus project?"
+        subtitle="Tindakan ini tidak dapat dibatalkan."
+      >
+        <p className="text-sm leading-6 text-slate-600">
+          Project <span className="font-semibold text-slate-900">{pendingDeleteProject?.name}</span> beserta seluruh data di dalamnya akan dihapus permanen.
+        </p>
+        {deleteProjectError && (
+          <div className="mt-4 rounded-xl bg-rose-50 px-4 py-3 text-sm text-rose-700" role="alert">
+            {deleteProjectError}
+          </div>
+        )}
+        <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <button
+            type="button"
+            className="btn-secondary"
+            disabled={deletingProject}
+            onClick={() => {
+              setPendingDeleteProject(null);
+              setDeleteProjectError(null);
+            }}
+          >
+            Batal
+          </button>
+          <button
+            type="button"
+            disabled={deletingProject}
+            onClick={() => void handleDeleteProject()}
+            className="inline-flex items-center justify-center gap-2 rounded-xl bg-rose-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {deletingProject && <Loader2 className="h-4 w-4 animate-spin" />}
+            {deletingProject ? 'Menghapus...' : 'Hapus permanen'}
+          </button>
+        </div>
+      </Modal>
 
     </div>
   );

@@ -55,7 +55,6 @@ export interface DetectionResult {
   label: string;
   confidence: number;
   bbox: { x: number; y: number; width: number; height: number };
-  ocrText?: string;
   matchedComponentId?: string;
 }
 

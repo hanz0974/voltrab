@@ -3,7 +3,7 @@ Router untuk menyimpan dan memuat progres RAB per pengguna.
 Menggunakan tabel user_projects di Supabase Postgres.
 """
 from fastapi import APIRouter, HTTPException, Depends, status
-from app.core.security import decode_access_token
+from app.core.security import verify_supabase_access_token
 from app.core.database import execute_query
 from app.models.schemas import ProjectSave, ProjectResponse
 import json
@@ -18,7 +18,7 @@ def get_user_id(payload: dict) -> str:
 
 
 @router.get("", response_model=list[ProjectResponse])
-def list_projects(payload: dict = Depends(decode_access_token)):
+def list_projects(payload: dict = Depends(verify_supabase_access_token)):
     """Ambil semua project milik user, diurutkan berdasarkan updated_at terbaru."""
     user_id = get_user_id(payload)
     rows = execute_query(
@@ -42,7 +42,7 @@ def list_projects(payload: dict = Depends(decode_access_token)):
 
 
 @router.post("", response_model=ProjectResponse)
-def save_project(project: ProjectSave, payload: dict = Depends(decode_access_token)):
+def save_project(project: ProjectSave, payload: dict = Depends(verify_supabase_access_token)):
     """Buat project baru atau update yang sudah ada (upsert berdasarkan project_data)."""
     user_id = get_user_id(payload)
 
@@ -63,7 +63,7 @@ def save_project(project: ProjectSave, payload: dict = Depends(decode_access_tok
 
 
 @router.put("/{project_id}", response_model=ProjectResponse)
-def update_project(project_id: str, project: ProjectSave, payload: dict = Depends(decode_access_token)):
+def update_project(project_id: str, project: ProjectSave, payload: dict = Depends(verify_supabase_access_token)):
     """Update project yang sudah ada."""
     user_id = get_user_id(payload)
 
@@ -87,7 +87,7 @@ def update_project(project_id: str, project: ProjectSave, payload: dict = Depend
 
 
 @router.delete("/{project_id}")
-def delete_project(project_id: str, payload: dict = Depends(decode_access_token)):
+def delete_project(project_id: str, payload: dict = Depends(verify_supabase_access_token)):
     """Hapus project."""
     user_id = get_user_id(payload)
     execute_query(

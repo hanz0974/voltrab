@@ -1,15 +1,13 @@
-import { Building2, MapPin, User, Calendar, Layers, FileText } from 'lucide-react';
+import { Building2, MapPin, User, Calendar, FileText } from 'lucide-react';
 import type { ProjectState } from '../types';
 
 interface ProjectStepProps {
   project: ProjectState;
   onChange: (patch: Partial<ProjectState>) => void;
-  floorCount: number;
-  onFloorCountChange: (count: number) => void;
   onNext: () => void;
 }
 
-export function ProjectStep({ project, onChange, floorCount, onFloorCountChange, onNext }: ProjectStepProps) {
+export function ProjectStep({ project, onChange, onNext }: ProjectStepProps) {
   const canProceed = project.name.trim().length > 0;
 
   return (
@@ -17,7 +15,7 @@ export function ProjectStep({ project, onChange, floorCount, onFloorCountChange,
       <div>
         <h2 className="text-2xl font-bold text-slate-900">Informasi Project</h2>
         <p className="mt-1 text-sm text-slate-500">
-          Mulai dengan memberikan identitas project dan menentukan struktur bangunan.
+          Mulai dengan melengkapi identitas project. Lantai dan ruangan dapat diatur pada tahap Komponen.
         </p>
       </div>
 
@@ -32,16 +30,25 @@ export function ProjectStep({ project, onChange, floorCount, onFloorCountChange,
         </div>
         <div className="grid gap-5 p-6 sm:grid-cols-2">
           <div className="sm:col-span-2">
-            <label className="label-base">Nama Project *</label>
+            <label htmlFor="project-name" className="label-base">Nama Project *</label>
             <div className="relative">
               <Building2 className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
               <input
+                id="project-name"
                 className="input-base pl-10"
                 placeholder="Contoh: Instalasi Kelistrikan Gedung Perkantoran 5 Lantai"
                 value={project.name}
                 onChange={(e) => onChange({ name: e.target.value })}
+                required
+                aria-invalid={!canProceed}
+                aria-describedby={!canProceed ? 'project-name-error' : undefined}
               />
             </div>
+            {!canProceed && (
+              <p id="project-name-error" className="mt-1.5 text-xs font-medium text-rose-600" role="alert">
+                Nama project wajib diisi sebelum melanjutkan ke Komponen.
+              </p>
+            )}
           </div>
           <div>
             <label className="label-base">Nama Klien</label>

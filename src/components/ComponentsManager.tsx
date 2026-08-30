@@ -1,4 +1,5 @@
 import { Fragment, useState, useEffect, useCallback, type FormEvent } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Plus,
   Search,
@@ -14,6 +15,7 @@ import { supabase } from '../lib/supabase';
 import { getBiayaUmumKoef, isHiddenSettingComponentId, setBiayaUmumKoef as persistBiayaUmumKoefSetting } from '../lib/biayaUmumSetting';
 import type { PartCategory } from '../types';
 import { CATEGORY_COLORS, formatRupiah } from '../data';
+import { ComponentExcelImport } from './ComponentExcelImport';
 
 interface ComponentRecord {
   id: string;
@@ -21,7 +23,6 @@ interface ComponentRecord {
   category: PartCategory;
   unit: string;
   price: number;
-  is_active: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -105,6 +106,8 @@ export function ComponentsManager() {
   const [form, setForm] = useState(emptyForm);
   const [error, setError] = useState<string | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  const [showDeleteAllConfirm, setShowDeleteAllConfirm] = useState(false);
+  const [deletingAll, setDeletingAll] = useState(false);
   const [showDetailModal, setShowDetailModal] = useState(false);
   const [activeDetailComponent, setActiveDetailComponent] = useState<ComponentRecord | null>(null);
   const [details, setDetails] = useState<DetailKomponenRecord[]>([]);
@@ -296,19 +299,29 @@ export function ComponentsManager() {
     setDeleteConfirm(null);
   };
 
-  const handleToggleActive = async (component: ComponentRecord) => {
-    const { error: updateError } = await supabase
-      .from('components')
-      .update({ is_active: !component.is_active, updated_at: new Date().toISOString() })
-      .eq('id', component.id);
+  const handleDeleteAll = async () => {
+    const componentIds = components
+      .filter((component) => !isHiddenSettingComponentId(component.id))
+      .map((component) => component.id);
 
-    if (!updateError) {
-      setComponents((previous) =>
-        previous.map((item) => (item.id === component.id ? { ...item, is_active: !item.is_active } : item)),
-      );
-    } else {
-      setError(updateError.message ?? 'Gagal mengubah status komponen');
+    if (componentIds.length === 0) {
+      setShowDeleteAllConfirm(false);
+      return;
     }
+
+    setDeletingAll(true);
+    setError(null);
+
+    const { error: deleteError } = await supabase.from('components').delete().in('id', componentIds);
+
+    if (!deleteError) {
+      setComponents((previous) => previous.filter((component) => isHiddenSettingComponentId(component.id)));
+      setShowDeleteAllConfirm(false);
+    } else {
+      setError(deleteError.message ?? 'Gagal menghapus semua komponen');
+    }
+
+    setDeletingAll(false);
   };
 
   const fetchComponentDetails = useCallback(async (componentId: string) => {
@@ -489,13 +502,27 @@ export function ComponentsManager() {
           <h2 className="text-2xl font-bold text-slate-900">Komponen Katalog</h2>
           <p className="mt-1 text-slate-600">Kelola daftar komponen dan harga untuk RAB.</p>
         </div>
-        <button
-          onClick={openAddForm}
-          className="inline-flex items-center justify-center gap-2 rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-brand-700"
-        >
-          <Plus className="h-4 w-4" />
-          Tambah Komponen
-        </button>
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <button
+            onClick={() => {
+              setError(null);
+              setShowDeleteAllConfirm(true);
+            }}
+            disabled={loading || !components.some((component) => !isHiddenSettingComponentId(component.id))}
+            className="inline-flex items-center justify-center gap-2 rounded-lg border border-rose-200 bg-white px-4 py-2.5 text-sm font-semibold text-rose-600 shadow-sm transition-colors hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Trash2 className="h-4 w-4" />
+            Hapus Semua
+          </button>
+          <ComponentExcelImport onImported={fetchComponents} />
+          <button
+            onClick={openAddForm}
+            className="inline-flex items-center justify-center gap-2 rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-brand-700"
+          >
+            <Plus className="h-4 w-4" />
+            Tambah Komponen
+          </button>
+        </div>
       </div>
 
       <div className="mb-6 flex flex-col gap-4 sm:flex-row">
@@ -555,42 +582,29 @@ export function ComponentsManager() {
               </div>
 
               <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
-                <table className="min-w-full divide-y divide-slate-200">
+                <table className="w-full table-fixed divide-y divide-slate-200">
                   <thead className="bg-slate-50">
                     <tr>
-                      <th className="px-4 py-3 text-left text-xs font-semibold text-slate-600">ID</th>
-                      <th className="px-4 py-3 text-left text-xs font-semibold text-slate-600">Nama</th>
-                      <th className="px-4 py-3 text-left text-xs font-semibold text-slate-600">Satuan</th>
-                      <th className="px-4 py-3 text-right text-xs font-semibold text-slate-600">Harga</th>
-                      <th className="px-4 py-3 text-center text-xs font-semibold text-slate-600">Status</th>
-                      <th className="px-4 py-3 text-right text-xs font-semibold text-slate-600">Aksi</th>
+                      <th className="w-[17%] px-4 py-3 text-left text-xs font-semibold text-slate-600">ID</th>
+                      <th className="w-[36%] px-4 py-3 text-left text-xs font-semibold text-slate-600">Nama</th>
+                      <th className="w-[9%] px-4 py-3 text-left text-xs font-semibold text-slate-600">Satuan</th>
+                      <th className="w-[16%] px-4 py-3 text-right text-xs font-semibold text-slate-600">Harga</th>
+                      <th className="w-[22%] px-4 py-3 text-right text-xs font-semibold text-slate-600">Aksi</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-200">
                     {items.map((component) => (
                       <tr
                         key={component.id}
-                        className={`transition-colors hover:bg-slate-50 ${!component.is_active ? 'opacity-60' : ''}`}
+                        className="group transition-colors hover:bg-slate-50"
                       >
-                        <td className="whitespace-nowrap px-4 py-3 text-sm font-mono text-slate-500">{component.id}</td>
-                        <td className="whitespace-nowrap px-4 py-3 text-sm font-medium text-slate-900">{component.name}</td>
+                        <td className="truncate px-4 py-3 text-sm font-mono text-slate-500" title={component.id}>{component.id}</td>
+                        <td className="break-words px-4 py-3 text-sm font-medium text-slate-900">{component.name}</td>
                         <td className="whitespace-nowrap px-4 py-3 text-sm text-slate-600">{component.unit}</td>
                         <td className="whitespace-nowrap px-4 py-3 text-right text-sm text-slate-900">
                           {formatRupiah(component.price)}
                         </td>
-                        <td className="px-4 py-3 text-center">
-                          <button
-                            onClick={() => void handleToggleActive(component)}
-                            className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors ${
-                              component.is_active
-                                ? 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
-                                : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                            }`}
-                          >
-                            {component.is_active ? 'Aktif' : 'Nonaktif'}
-                          </button>
-                        </td>
-                        <td className="whitespace-nowrap px-4 py-3 text-right">
+                        <td className="px-4 py-3 text-right">
                           <div className="flex items-center justify-end gap-1">
                             <button
                               onClick={() => void openDetailModal(component)}
@@ -632,10 +646,10 @@ export function ComponentsManager() {
         </div>
       )}
 
-      {showForm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      {showForm && createPortal((
+        <div className="fixed inset-0 z-[60] flex items-center justify-center overflow-y-auto p-4">
           <div className="fixed inset-0 bg-black/50" onClick={closeForm} />
-          <div className="relative w-full max-w-lg rounded-xl bg-white p-6 shadow-xl">
+          <div className="relative max-h-[calc(100vh-2rem)] w-full max-w-lg overflow-y-auto rounded-xl bg-white p-6 shadow-xl">
             <div className="mb-4 flex items-center justify-between">
               <h3 className="text-lg font-semibold text-slate-900">
                 {editingComponent ? 'Edit Komponen' : 'Tambah Komponen Baru'}
@@ -743,10 +757,10 @@ export function ComponentsManager() {
             </form>
           </div>
         </div>
-      )}
+      ), document.body)}
 
-      {deleteConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      {deleteConfirm && createPortal((
+        <div className="fixed inset-0 z-[60] flex items-center justify-center overflow-y-auto p-4">
           <div className="fixed inset-0 bg-black/50" onClick={() => setDeleteConfirm(null)} />
           <div className="relative w-full max-w-sm rounded-xl bg-white p-6 shadow-xl">
             <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-rose-100">
@@ -772,12 +786,53 @@ export function ComponentsManager() {
             </div>
           </div>
         </div>
-      )}
+      ), document.body)}
 
-      {showDetailModal && activeDetailComponent && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      {showDeleteAllConfirm && createPortal((
+        <div className="fixed inset-0 z-[60] flex items-center justify-center overflow-y-auto p-4">
+          <div
+            className="fixed inset-0 bg-black/50"
+            onClick={() => !deletingAll && setShowDeleteAllConfirm(false)}
+          />
+          <div className="relative w-full max-w-sm rounded-xl bg-white p-6 shadow-xl">
+            <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-rose-100">
+              <Trash2 className="h-6 w-6 text-rose-600" />
+            </div>
+            <h3 className="text-lg font-semibold text-slate-900">Hapus Semua Komponen?</h3>
+            <p className="mt-2 text-sm text-slate-600">
+              Tindakan ini tidak dapat dibatalkan. Semua komponen katalog beserta detailnya akan dihapus permanen.
+            </p>
+            {error && (
+              <div className="mt-4 flex items-center gap-2 rounded-lg bg-rose-50 p-3 text-sm text-rose-700">
+                <AlertCircle className="h-4 w-4 flex-shrink-0" />
+                {error}
+              </div>
+            )}
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                onClick={() => setShowDeleteAllConfirm(false)}
+                disabled={deletingAll}
+                className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50 disabled:opacity-50"
+              >
+                Batal
+              </button>
+              <button
+                onClick={() => void handleDeleteAll()}
+                disabled={deletingAll}
+                className="inline-flex items-center gap-2 rounded-lg bg-rose-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {deletingAll && <Loader2 className="h-4 w-4 animate-spin" />}
+                Hapus Semua
+              </button>
+            </div>
+          </div>
+        </div>
+      ), document.body)}
+
+      {showDetailModal && activeDetailComponent && createPortal((
+        <div className="fixed inset-0 z-[60] flex items-center justify-center overflow-y-auto p-4">
           <div className="fixed inset-0 bg-black/50" onClick={closeDetailModal} />
-          <div className="relative w-full max-w-5xl rounded-xl bg-white p-6 shadow-xl">
+          <div className="relative max-h-[calc(100vh-2rem)] w-full max-w-5xl overflow-y-auto rounded-xl bg-white p-6 shadow-xl">
             <div className="mb-4 flex items-center justify-between">
               <div>
                 <h3 className="text-lg font-semibold text-slate-900">Detail Komponen</h3>
@@ -1080,7 +1135,7 @@ export function ComponentsManager() {
             </div>
           </div>
         </div>
-      )}
+      ), document.body)}
     </div>
   );
 }

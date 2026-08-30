@@ -10,6 +10,8 @@ import {
   AlertCircle,
   Info,
   ExternalLink,
+  Play,
+  RefreshCw,
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 
@@ -24,6 +26,31 @@ interface YoloModel {
   uploaded_by: string | null;
   created_at: string;
   updated_at: string;
+}
+
+interface TrainingSession {
+  reportIds: string[];
+  baselineModelIds: string[];
+  startedAt: string;
+}
+
+interface TrainingStats {
+  ready: number;
+  missingAnnotation: number;
+}
+
+const COLAB_TRAINING_URL = 'https://colab.research.google.com/drive/1s9a4hDn1Dl6FoeOCFKHB3VQ0SmJGn00r?usp=sharing';
+const TRAINING_SESSION_KEY = 'voltrab-yolo-training-session';
+const MIN_TRAINING_REPORTS = 4;
+
+function readTrainingSession(): TrainingSession | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const value = window.localStorage.getItem(TRAINING_SESSION_KEY);
+    return value ? JSON.parse(value) as TrainingSession : null;
+  } catch {
+    return null;
+  }
 }
 
 const formatFileSize = (bytes: number | null): string => {
@@ -46,23 +73,164 @@ export function ModelsManager() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  const [startingTraining, setStartingTraining] = useState(false);
+  const [trainingSession, setTrainingSession] = useState<TrainingSession | null>(() => readTrainingSession());
+  const [trainingMessage, setTrainingMessage] = useState<string | null>(null);
+  const [trainingStats, setTrainingStats] = useState<TrainingStats>({ ready: 0, missingAnnotation: 0 });
+  const [loadingTrainingStats, setLoadingTrainingStats] = useState(true);
+  const [showTrainingConfirm, setShowTrainingConfirm] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const fetchModels = useCallback(async () => {
-    setLoading(true);
+  const loadTrainingStats = useCallback(async () => {
+    setLoadingTrainingStats(true);
+    const { data, error: statsError } = await supabase
+      .from('detection_feedback_reports')
+      .select('system_report')
+      .eq('report_source', 'user')
+      .in('status', ['open', 'reviewed']);
+
+    if (statsError) {
+      setError(statsError.message || 'Gagal membaca kesiapan dataset.');
+      setLoadingTrainingStats(false);
+      return;
+    }
+
+    let ready = 0;
+    let missingAnnotation = 0;
+    for (const report of data ?? []) {
+      const annotations = (report.system_report as Record<string, unknown> | null)?.training_annotations;
+      if (Array.isArray(annotations) && annotations.length > 0) ready += 1;
+      else missingAnnotation += 1;
+    }
+    setTrainingStats({ ready, missingAnnotation });
+    setLoadingTrainingStats(false);
+  }, []);
+
+  const finishTrainingSession = useCallback(async (session: TrainingSession) => {
+    const { error: resolveError } = await supabase
+      .from('detection_feedback_reports')
+      .update({ status: 'resolved' })
+      .in('id', session.reportIds)
+      .eq('status', 'reviewed');
+
+    if (resolveError) {
+      setError(resolveError.message || 'Model sudah masuk, tetapi status report gagal diperbarui.');
+      return;
+    }
+
+    window.localStorage.removeItem(TRAINING_SESSION_KEY);
+    setTrainingSession(null);
+    setTrainingMessage(`${session.reportIds.length} report training otomatis ditandai resolved.`);
+    await loadTrainingStats();
+  }, [loadTrainingStats]);
+
+  const fetchModels = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     const { data, error } = await supabase
       .from('yolo_models')
       .select('*')
       .order('created_at', { ascending: false });
     if (!error && data) {
-      setModels(data as YoloModel[]);
+      const fetchedModels = data as YoloModel[];
+      setModels(fetchedModels);
+
+      const session = readTrainingSession();
+      const uploadedTrainingModel = session && fetchedModels.find((model) => (
+        !session.baselineModelIds.includes(model.id)
+        && model.file_path?.startsWith('training/')
+      ));
+      if (session && uploadedTrainingModel) {
+        await finishTrainingSession(session);
+      }
+    } else if (error && !silent) {
+      setError(error.message || 'Gagal memuat daftar model.');
     }
-    setLoading(false);
-  }, []);
+    if (!silent) setLoading(false);
+  }, [finishTrainingSession]);
 
   useEffect(() => {
-    fetchModels();
-  }, [fetchModels]);
+    void fetchModels();
+    void loadTrainingStats();
+  }, [fetchModels, loadTrainingStats]);
+
+  useEffect(() => {
+    if (!trainingSession) return;
+    const intervalId = window.setInterval(() => {
+      void fetchModels(true);
+    }, 15000);
+    const checkAfterFocus = () => {
+      void fetchModels(true);
+      void loadTrainingStats();
+    };
+    window.addEventListener('focus', checkAfterFocus);
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', checkAfterFocus);
+    };
+  }, [fetchModels, loadTrainingStats, trainingSession]);
+
+  const handleStartTraining = async () => {
+    setShowTrainingConfirm(false);
+    const colabWindow = window.open('about:blank', '_blank');
+    if (!colabWindow) {
+      setError('Popup diblokir browser. Izinkan popup untuk membuka Google Colab.');
+      return;
+    }
+
+    setStartingTraining(true);
+    setError(null);
+    setTrainingMessage(null);
+
+    try {
+      const { data: reports, error: reportsError } = await supabase
+        .from('detection_feedback_reports')
+        .select('id, system_report, status')
+        .eq('report_source', 'user')
+        .in('status', ['open', 'reviewed']);
+      if (reportsError) throw reportsError;
+
+      const { data: baselineModels, error: baselineError } = await supabase
+        .from('yolo_models')
+        .select('id');
+      if (baselineError) throw baselineError;
+
+      const eligibleReportIds = (reports ?? [])
+        .filter((report) => {
+          const annotations = (report.system_report as Record<string, unknown> | null)?.training_annotations;
+          return Array.isArray(annotations) && annotations.length > 0;
+        })
+        .map((report) => report.id as string);
+
+      if (eligibleReportIds.length < MIN_TRAINING_REPORTS) {
+        throw new Error(
+          `Butuh minimal ${MIN_TRAINING_REPORTS} report beranotasi. Saat ini baru ada ${eligibleReportIds.length}.`,
+        );
+      }
+
+      const { error: reviewError } = await supabase
+        .from('detection_feedback_reports')
+        .update({ status: 'reviewed' })
+        .in('id', eligibleReportIds)
+        .eq('status', 'open');
+      if (reviewError) throw reviewError;
+
+      const session: TrainingSession = {
+        reportIds: eligibleReportIds,
+        baselineModelIds: (baselineModels ?? []).map((model) => model.id as string),
+        startedAt: new Date().toISOString(),
+      };
+      window.localStorage.setItem(TRAINING_SESSION_KEY, JSON.stringify(session));
+      setTrainingSession(session);
+      setTrainingMessage(`${eligibleReportIds.length} report ditandai reviewed. Menunggu model dari Colab.`);
+      setTrainingStats((current) => ({ ...current, ready: eligibleReportIds.length }));
+      colabWindow.location.href = COLAB_TRAINING_URL;
+    } catch (err) {
+      colabWindow.close();
+      setError(err instanceof Error ? err.message : 'Gagal menyiapkan training.');
+    } finally {
+      setStartingTraining(false);
+    }
+  };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -99,7 +267,10 @@ export function ModelsManager() {
 
       const { error: uploadError } = await supabase.storage
         .from('yolo-models')
-        .upload(filePath, selectedFile);
+        .upload(filePath, selectedFile, {
+          contentType: 'application/octet-stream',
+          upsert: false,
+        });
 
       if (uploadError) {
         if (uploadError.message.includes('Bucket not found')) {
@@ -175,22 +346,166 @@ export function ModelsManager() {
   };
 
   const activeModel = models.find((m) => m.is_active);
+  const inactiveModels = models.filter((model) => !model.is_active);
+  const trainingCandidate = models.find((model) => !model.is_active && model.file_path?.startsWith('training/'));
+  const workflowStep = trainingSession ? 2 : trainingCandidate ? 3 : 1;
 
   return (
     <div>
       <div className="mb-6 flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-bold text-slate-900">Model YOLOv8</h2>
-          <p className="mt-1 text-slate-600">Upload dan kelola model deteksi komponen.</p>
+          <p className="mt-1 text-slate-600">Review dataset, jalankan training, lalu uji dan aktifkan model.</p>
         </div>
         <button
           onClick={() => setShowForm(true)}
-          className="inline-flex items-center gap-2 rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-brand-700"
+          className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-600 shadow-sm transition-colors hover:bg-slate-50"
         >
           <Upload className="h-4 w-4" />
-          Upload Model
+          Upload Manual
         </button>
       </div>
+
+      {error && !showForm && (
+        <div className="mb-5 flex items-start gap-2 rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
+          <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" />
+          {error}
+        </div>
+      )}
+      {trainingMessage && (
+        <div className="mb-5 flex items-start gap-2 rounded-lg border border-sky-200 bg-sky-50 p-3 text-sm text-sky-700">
+          <Info className="mt-0.5 h-4 w-4 flex-shrink-0" />
+          {trainingMessage}
+        </div>
+      )}
+
+      <section className="mb-6 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+        <div className="border-b border-slate-100 bg-slate-50/80 px-5 py-4">
+          <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h3 className="font-semibold text-slate-900">Alur Training Model</h3>
+              <p className="text-sm text-slate-500">Selesaikan tiga tahap ini untuk memperbarui model deteksi.</p>
+            </div>
+            <span className="mt-2 w-fit rounded-full bg-brand-50 px-3 py-1 text-xs font-semibold text-brand-700 sm:mt-0">
+              Tahap {workflowStep} dari 3
+            </span>
+          </div>
+        </div>
+
+        <div className="grid gap-0 md:grid-cols-3">
+          {[
+            { number: 1, title: 'Siapkan Data', description: 'Bounding box user direview' },
+            { number: 2, title: 'Training', description: 'Proses model di Google Colab' },
+            { number: 3, title: 'Uji & Aktifkan', description: 'Validasi model kandidat' },
+          ].map((step) => {
+            const completed = workflowStep > step.number;
+            const current = workflowStep === step.number;
+            return (
+              <div
+                key={step.number}
+                className={`flex items-center gap-3 border-slate-100 p-4 md:border-r md:last:border-r-0 ${current ? 'bg-brand-50/60' : ''}`}
+              >
+                <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-sm font-bold ${
+                  completed
+                    ? 'bg-emerald-500 text-white'
+                    : current
+                      ? 'bg-brand-600 text-white'
+                      : 'bg-slate-100 text-slate-400'
+                }`}>
+                  {completed ? <Check className="h-4 w-4" /> : step.number}
+                </div>
+                <div>
+                  <div className={`text-sm font-semibold ${current ? 'text-brand-800' : 'text-slate-700'}`}>{step.title}</div>
+                  <div className="text-xs text-slate-500">{step.description}</div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="border-t border-slate-100 p-5">
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div className="rounded-xl bg-emerald-50 p-4">
+              <div className="text-2xl font-bold text-emerald-700">
+                {loadingTrainingStats ? '—' : trainingStats.ready}
+              </div>
+              <div className="text-sm font-medium text-emerald-700">Report siap training</div>
+            </div>
+            <div className="rounded-xl bg-amber-50 p-4">
+              <div className="text-2xl font-bold text-amber-700">
+                {loadingTrainingStats ? '—' : trainingStats.missingAnnotation}
+              </div>
+              <div className="text-sm font-medium text-amber-700">Belum ada bounding box</div>
+            </div>
+            <div className="rounded-xl bg-slate-50 p-4">
+              <div className="text-2xl font-bold text-slate-700">{MIN_TRAINING_REPORTS}</div>
+              <div className="text-sm font-medium text-slate-600">Minimum dataset</div>
+            </div>
+          </div>
+
+          <div className="mt-4 flex flex-col gap-3 rounded-xl border border-slate-200 bg-slate-50 p-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <div className="text-sm font-semibold text-slate-800">
+                {trainingSession
+                  ? 'Menunggu model ONNX dari Google Colab'
+                  : trainingCandidate
+                    ? `Model kandidat tersedia: ${trainingCandidate.name}`
+                    : trainingStats.ready >= MIN_TRAINING_REPORTS
+                      ? 'Dataset sudah cukup untuk memulai training'
+                      : `Tambahkan ${Math.max(0, MIN_TRAINING_REPORTS - trainingStats.ready)} report beranotasi lagi`}
+              </div>
+              <p className="mt-1 text-xs text-slate-500">
+                {trainingSession
+                  ? `${trainingSession.reportIds.length} report sedang dipantau sejak ${new Date(trainingSession.startedAt).toLocaleString('id-ID')}.`
+                  : trainingCandidate
+                    ? 'Uji model pada beberapa gambar sebelum menjadikannya model aktif.'
+                    : 'Hanya report user dengan bounding box yang masuk dataset training.'}
+              </p>
+            </div>
+
+            {trainingSession ? (
+              <div className="flex shrink-0 flex-wrap gap-2">
+                <a
+                  href={COLAB_TRAINING_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-2 rounded-lg border border-amber-200 bg-white px-3 py-2 text-sm font-semibold text-amber-700 hover:bg-amber-50"
+                >
+                  Buka Colab <ExternalLink className="h-4 w-4" />
+                </a>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void fetchModels(true);
+                  }}
+                  className="inline-flex items-center gap-2 rounded-lg bg-brand-600 px-3 py-2 text-sm font-semibold text-white hover:bg-brand-700"
+                >
+                  <RefreshCw className="h-4 w-4" /> Cek Model
+                </button>
+              </div>
+            ) : trainingCandidate ? (
+              <button
+                type="button"
+                onClick={() => {
+                  void handleSetActive(trainingCandidate);
+                }}
+                className="inline-flex shrink-0 items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700"
+              >
+                <Check className="h-4 w-4" /> Aktifkan Kandidat
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setShowTrainingConfirm(true)}
+                disabled={loading || loadingTrainingStats || startingTraining || trainingStats.ready < MIN_TRAINING_REPORTS}
+                className="inline-flex shrink-0 items-center justify-center gap-2 rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Play className="h-4 w-4" /> Mulai Training
+              </button>
+            )}
+          </div>
+        </div>
+      </section>
 
       {activeModel && (
         <div className="mb-6 flex items-center gap-4 rounded-xl border border-emerald-200 bg-emerald-50 p-4">
@@ -224,6 +539,12 @@ export function ModelsManager() {
         </div>
       ) : (
         <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="font-semibold text-slate-900">Model Kandidat & Riwayat</h3>
+              <p className="text-xs text-slate-500">Model belum aktif yang masih bisa diuji atau dihapus.</p>
+            </div>
+          </div>
           {models.length === 0 ? (
             <div className="rounded-xl border border-slate-200 bg-white py-12 text-center">
               <Brain className="mx-auto h-12 w-12 text-slate-300" />
@@ -232,9 +553,13 @@ export function ModelsManager() {
                 Upload model YOLOv8 format ONNX untuk mulai mendeteksi komponen.
               </p>
             </div>
+          ) : inactiveModels.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 py-8 text-center text-sm text-slate-500">
+              Belum ada model kandidat. Model aktif tidak ditampilkan ulang di bagian ini.
+            </div>
           ) : (
             <div className="grid gap-4">
-              {models.map((model) => (
+              {inactiveModels.map((model) => (
                 <div
                   key={model.id}
                   className={`rounded-xl border bg-white p-5 transition-all ${
@@ -305,84 +630,54 @@ export function ModelsManager() {
         </div>
       )}
 
-      <div className="mt-8 space-y-4">
-        <h3 className="text-lg font-semibold text-slate-900">Panduan Penyiapan Model</h3>
-        <div className="grid gap-4 md:grid-cols-2">
-          <div className="flex flex-col justify-between rounded-xl border border-indigo-200 bg-indigo-50/60 p-5">
+      {showTrainingConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <button
+            type="button"
+            aria-label="Tutup konfirmasi training"
+            className="fixed inset-0 bg-black/50"
+            onClick={() => setShowTrainingConfirm(false)}
+          />
+          <div className="relative w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
             <div className="flex items-start gap-3">
-              <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-indigo-100 text-indigo-600">
-                <ExternalLink className="h-5 w-5" />
-              </div>
-              <div>
-                <h4 className="font-semibold text-indigo-900">1. Anotasi Dataset dengan Roboflow</h4>
-                <p className="mt-1 text-sm leading-relaxed text-indigo-700">
-                  Sebelum melakukan training, siapkan dataset dan lakukan anotasi (labelling/bounding box) pada gambar komponen kelistrikan secara online menggunakan website <strong>Roboflow</strong>.
-                </p>
-              </div>
-            </div>
-            <div className="mt-4 pt-2">
-              <a
-                href="https://roboflow.com"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-indigo-700"
-              >
-                Buka Roboflow
-                <ExternalLink className="h-3.5 w-3.5" />
-              </a>
-            </div>
-          </div>
-
-          <div className="flex flex-col justify-between rounded-xl border border-amber-200 bg-amber-50/60 p-5">
-            <div className="flex items-start gap-3">
-              <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-amber-100 text-amber-600">
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-brand-50 text-brand-600">
                 <Brain className="h-5 w-5" />
               </div>
               <div>
-                <h4 className="font-semibold text-amber-900">2. Training Model di Google Colab</h4>
-                <p className="mt-1 text-sm leading-relaxed text-amber-700">
-                  Latih model YOLOv8 menggunakan dataset dari Roboflow dan ekspor hasilnya ke format ONNX melalui notebook <strong>Google Colab</strong> yang telah disiapkan.
+                <h3 className="text-lg font-semibold text-slate-900">Mulai training model?</h3>
+                <p className="mt-1 text-sm leading-relaxed text-slate-600">
+                  {trainingStats.ready} report beranotasi akan ditandai reviewed, lalu Google Colab dibuka di tab baru.
                 </p>
               </div>
             </div>
-            <div className="mt-4 pt-2">
-              <a
-                href="https://colab.research.google.com/drive/1uWeShtI6npyIX12_jcIC73m1Yk6s1kLS#scrollTo=tdSMcABDNKW-"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1.5 rounded-lg bg-amber-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-amber-700"
-              >
-                Buka Google Colab
-                <ExternalLink className="h-3.5 w-3.5" />
-              </a>
-            </div>
-          </div>
-        </div>
 
-        <div className="rounded-xl border border-sky-200 bg-sky-50 p-5">
-          <div className="flex gap-3">
-            <Info className="h-5 w-5 flex-shrink-0 text-sky-600" />
-            <div>
-              <h4 className="font-medium text-sky-900">Format Model YOLOv8</h4>
-              <p className="mt-1 text-sm text-sky-700">
-                Model harus dalam format ONNX (.onnx) yang diekspor dari YOLOv8. Pastikan model sudah
-                dilatih untuk mendeteksi komponen kelistrikan.
-              </p>
-              <div className="mt-3 flex flex-wrap gap-2">
-                <span className="rounded bg-sky-100 px-2 py-1 text-xs font-medium text-sky-700">
-                  .onnx
-                </span>
-                <span className="rounded bg-sky-100 px-2 py-1 text-xs font-medium text-sky-700">
-                  YOLOv8n/s/m/l/x
-                </span>
-                <span className="rounded bg-sky-100 px-2 py-1 text-xs font-medium text-sky-700">
-                  640x640 input
-                </span>
-              </div>
+            <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+              Jangan tutup seluruh sesi browser sebelum model selesai diunggah. Dashboard akan otomatis memantau model baru.
+            </div>
+
+            <div className="mt-6 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowTrainingConfirm(false)}
+                className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  void handleStartTraining();
+                }}
+                disabled={startingTraining}
+                className="inline-flex items-center gap-2 rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-60"
+              >
+                {startingTraining ? <Loader2 className="h-4 w-4 animate-spin" /> : <ExternalLink className="h-4 w-4" />}
+                Lanjut ke Colab
+              </button>
             </div>
           </div>
         </div>
-      </div>
+      )}
 
       {showForm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">

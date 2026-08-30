@@ -9,6 +9,11 @@ import {
   PencilIcon,
   Send,
   MessageSquareWarning,
+  Ruler,
+  Calculator,
+  Plus,
+  Undo2,
+  Trash2,
 } from "lucide-react";
 import type { DetectionResult, PartItem, ComponentSpec } from "../types";
 import { formatRupiah, uid } from "../data";
@@ -26,6 +31,12 @@ interface DetectionModalProps {
   roomName: string;
   catalogComponents: ComponentSpec[];
   catalogLoading: boolean;
+}
+
+interface TrainingAnnotation {
+  id: string;
+  label: string;
+  bbox: { x: number; y: number; width: number; height: number };
 }
 
 const LABEL_TO_COMPONENT: Record<string, string> = {
@@ -67,6 +78,26 @@ export function DetectionModal({
   const [reportSent, setReportSent] = useState(false);
   const [reportError, setReportError] = useState("");
   const [autoReportSent, setAutoReportSent] = useState(false);
+  const [trainingAnnotations, setTrainingAnnotations] = useState<TrainingAnnotation[]>([]);
+  const [annotationLabel, setAnnotationLabel] = useState("");
+  const [annotationStart, setAnnotationStart] = useState<{ x: number; y: number } | null>(null);
+  const [annotationDraft, setAnnotationDraft] = useState<TrainingAnnotation["bbox"] | null>(null);
+  const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
+
+  // --- STATE KALIBRASI & PERHITUNGAN KABEL ---
+  const [showCalibration, setShowCalibration] = useState(false);
+  const [isCalibrating, setIsCalibrating] = useState(false);
+  const [calibrationStart, setCalibrationStart] = useState<{ x: number; y: number } | null>(null);
+  const [calibrationEnd, setCalibrationEnd] = useState<{ x: number; y: number } | null>(null);
+  const [manualLengthInput, setManualLengthInput] = useState<string>("1.0"); // dalam meter
+  const [ceilingHeightInput, setCeilingHeightInput] = useState<string>("3.0"); // tinggi plafon dalam meter
+  const [switchHeightInput, setSwitchHeightInput] = useState<string>("1.5"); // tinggi saklar dalam meter
+  const [scalePerPercent, setScalePerPercent] = useState<number | null>(null); // meter per persentase koordinat
+  const [calculatedCableLength, setCalculatedCableLength] = useState<number | null>(null);
+  const [cableComponentId, setCableComponentId] = useState<string>("");
+  const imageContainerRef = useRef<HTMLDivElement>(null);
+  const annotationImageRef = useRef<HTMLDivElement>(null);
+
   const fileRef = useRef<HTMLInputElement>(null);
   const dragRef = useRef<HTMLDivElement>(null);
 
@@ -74,6 +105,11 @@ export function DetectionModal({
     component.name.toLowerCase().includes(manualSearch.toLowerCase()) ||
     component.category.toLowerCase().includes(manualSearch.toLowerCase()),
   );
+
+  const cableComponents = catalogComponents.filter(
+    (component) => component.category.toLowerCase() === "kabel",
+  );
+  const reportReady = reportComplaint.trim().length >= 5 && trainingAnnotations.length > 0;
 
   const toggleManualSelected = (id: string) => {
     setManualSelected((prev) =>
@@ -104,8 +140,186 @@ export function DetectionModal({
       setReportSent(false);
       setReportError("");
       setAutoReportSent(false);
+      setTrainingAnnotations([]);
+      setAnnotationLabel("");
+      setAnnotationStart(null);
+      setAnnotationDraft(null);
+      setSelectedAnnotationId(null);
+      setShowCalibration(false);
+      setIsCalibrating(false);
+      setCalibrationStart(null);
+      setCalibrationEnd(null);
+      setScalePerPercent(null);
+      setCalculatedCableLength(null);
+      setCableComponentId("");
     }
   }, [open]);
+
+  const getAnnotationPoint = (event: React.PointerEvent<HTMLDivElement>) => {
+    const rect = annotationImageRef.current?.getBoundingClientRect();
+    if (!rect) return null;
+    return {
+      x: Math.min(100, Math.max(0, ((event.clientX - rect.left) / rect.width) * 100)),
+      y: Math.min(100, Math.max(0, ((event.clientY - rect.top) / rect.height) * 100)),
+    };
+  };
+
+  const buildAnnotationBox = (
+    start: { x: number; y: number },
+    end: { x: number; y: number },
+  ): TrainingAnnotation["bbox"] => ({
+    x: Math.min(start.x, end.x),
+    y: Math.min(start.y, end.y),
+    width: Math.abs(end.x - start.x),
+    height: Math.abs(end.y - start.y),
+  });
+
+  const startAnnotation = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (reportSent) return;
+    if (!annotationLabel.trim()) {
+      setReportError("Isi nama simbol terlebih dahulu sebelum menggambar bounding box.");
+      return;
+    }
+    const point = getAnnotationPoint(event);
+    if (!point) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setReportError("");
+    setAnnotationStart(point);
+    setAnnotationDraft({ x: point.x, y: point.y, width: 0, height: 0 });
+  };
+
+  const moveAnnotation = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!annotationStart) return;
+    const point = getAnnotationPoint(event);
+    if (point) setAnnotationDraft(buildAnnotationBox(annotationStart, point));
+  };
+
+  const finishAnnotation = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!annotationStart) return;
+    const point = getAnnotationPoint(event);
+    const bbox = point ? buildAnnotationBox(annotationStart, point) : annotationDraft;
+    setAnnotationStart(null);
+    setAnnotationDraft(null);
+
+    if (!bbox || bbox.width < 1 || bbox.height < 1) {
+      setReportError("Bounding box terlalu kecil. Tarik kotak mengelilingi simbol yang terlewat.");
+      return;
+    }
+
+    const annotation = { id: uid(), label: annotationLabel.trim(), bbox };
+    setTrainingAnnotations((prev) => [...prev, annotation]);
+    setSelectedAnnotationId(annotation.id);
+  };
+
+  const removeAnnotation = (annotationId: string) => {
+    setTrainingAnnotations((prev) => prev.filter((item) => item.id !== annotationId));
+    setSelectedAnnotationId((current) => current === annotationId ? null : current);
+  };
+
+  const undoLastAnnotation = () => {
+    setTrainingAnnotations((prev) => prev.slice(0, -1));
+    setSelectedAnnotationId(null);
+  };
+
+  const resetAnnotations = () => {
+    setTrainingAnnotations([]);
+    setSelectedAnnotationId(null);
+    setAnnotationStart(null);
+    setAnnotationDraft(null);
+  };
+
+  // Set default komponen kabel jika tersedia di katalog
+  useEffect(() => {
+    if (cableComponents.length > 0 && !cableComponentId) {
+      const defaultCable = cableComponents[0];
+      if (defaultCable) {
+        setCableComponentId(defaultCable.id);
+      }
+    }
+  }, [cableComponents, cableComponentId]);
+
+  // Hitung total panjang kabel berdasarkan kalibrasi dan jalur titik komponen terdeteksi
+  useEffect(() => {
+    if (scalePerPercent === null || detections.length < 2) {
+      setCalculatedCableLength(null);
+      return;
+    }
+
+    let totalHorizontalDistance = 0;
+    for (let i = 0; i < detections.length - 1; i++) {
+      const curr = detections[i].bbox;
+      const next = detections[i + 1].bbox;
+      const currCenter = { x: curr.x + curr.width / 2, y: curr.y + curr.height / 2 };
+      const nextCenter = { x: next.x + next.width / 2, y: next.y + next.height / 2 };
+      
+      // Jarak Manhattan / Siku-siku (tarikan kabel horizontal di plafon/dinding)
+      const distPercent = Math.abs(nextCenter.x - currCenter.x) + Math.abs(nextCenter.y - currCenter.y);
+      totalHorizontalDistance += distPercent * scalePerPercent;
+    }
+
+    const ceiling = parseFloat(ceilingHeightInput) || 3.0;
+    const switchH = parseFloat(switchHeightInput) || 1.5;
+    const verticalDropPerSwitch = Math.max(0, ceiling - switchH);
+
+    // Hitung berapa banyak komponen saklar / stop kontak yang butuh tarikan kabel turun vertikal dari plafon
+    const verticalDropsCount = detections.filter(d => 
+      d.label.toLowerCase().includes("switch") || 
+      d.label.toLowerCase().includes("saklar") || 
+      d.label.toLowerCase().includes("stop") ||
+      d.label.toLowerCase().includes("panel") ||
+      d.label.toLowerCase().includes("mcb")
+    ).length;
+
+    const totalVerticalDistance = verticalDropsCount * verticalDropPerSwitch;
+    const totalLength = totalHorizontalDistance + totalVerticalDistance;
+    
+    // Tambahkan 10% untuk toleransi lekukan kabel (safety factor)
+    setCalculatedCableLength(Math.ceil(totalLength * 1.1));
+  }, [scalePerPercent, detections, ceilingHeightInput, switchHeightInput]);
+
+  const handleImageClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!isCalibrating || !imageContainerRef.current) return;
+    const rect = imageContainerRef.current.getBoundingClientRect();
+    const x = ((e.clientX - rect.left) / rect.width) * 100;
+    const y = ((e.clientY - rect.top) / rect.height) * 100;
+
+    if (!calibrationStart) {
+      setCalibrationStart({ x, y });
+      setCalibrationEnd(null);
+    } else if (!calibrationEnd) {
+      setCalibrationEnd({ x, y });
+      setIsCalibrating(false);
+      
+      // Hitung jarak Euclidean dalam persentase koordinat
+      const dx = x - calibrationStart.x;
+      const dy = y - calibrationStart.y;
+      const distPercent = Math.sqrt(dx * dx + dy * dy);
+      const manualMeters = parseFloat(manualLengthInput) || 1.0;
+      if (distPercent > 0) {
+        setScalePerPercent(manualMeters / distPercent);
+      }
+    }
+  };
+
+  const handleAddCableToRAB = () => {
+    if (!calculatedCableLength || !cableComponentId) return;
+    const cableComp = catalogComponents.find(c => c.id === cableComponentId);
+    if (!cableComp) return;
+
+    const cablePart: PartItem = {
+      id: uid(),
+      componentId: cableComp.id,
+      name: `${cableComp.name} (Hasil Kalkulasi Kalibrasi SLD)`,
+      category: cableComp.category,
+      unit: cableComp.unit || "Meter",
+      quantity: calculatedCableLength,
+      price: cableComp.price,
+    };
+
+    const existingParts = buildDetectedParts();
+
+    onConfirm([...existingParts, cablePart]);
+  };
 
   const insertFeedbackReport = async (payload: Record<string, unknown>) => {
     const { error } = await supabase.from("detection_feedback_reports").insert(payload);
@@ -206,7 +420,6 @@ export function DetectionModal({
       "Mengunggah gambar ke server...",
       "Menjalankan inferensi YOLOv8...",
       "Mendeteksi bounding box simbol...",
-      "Menjalankan OCR pada label...",
       "Mencocokkan dengan katalog komponen...",
     ];
     let stepIdx = 0;
@@ -246,7 +459,6 @@ export function DetectionModal({
         label: d.label,
         confidence: d.confidence,
         bbox: d.bbox,
-        ocrText: d.ocr_text ?? undefined,
         matchedComponentId:
           d.matched_component_id ?? LABEL_TO_COMPONENT[d.label],
       }));
@@ -254,9 +466,12 @@ export function DetectionModal({
       if (results.length === 0) {
         setDetections([]);
         const message =
-          "Tidak ada objek terdeteksi pada gambar. Silakan masukkan komponen secara manual.";
+          "Tidak ada objek terdeteksi. Tandai simbol yang terlewat agar dapat direview sebagai data training.";
         setErrorMsg(message);
-        setStage("error");
+        setDetectionValid("no");
+        const finalImage = result.image_url || previewImage || imagePreview || "";
+        if (finalImage) setImagePreview(finalImage);
+        setStage("done");
         await sendAutoErrorReport({
           errorType: "empty_detection_result",
           userMessage: message,
@@ -332,6 +547,11 @@ export function DetectionModal({
       return;
     }
 
+    if (trainingAnnotations.length === 0) {
+      setReportError("Gambar minimal satu bounding box pada simbol yang tidak terdeteksi.");
+      return;
+    }
+
     setReportSending(true);
     setReportError("");
 
@@ -364,6 +584,8 @@ export function DetectionModal({
           created_at: new Date().toISOString(),
           stage,
           processing_step: processingStep,
+          annotation_format: "normalized_percent_xywh_top_left",
+          training_annotations: trainingAnnotations,
         },
       });
 
@@ -388,6 +610,39 @@ export function DetectionModal({
     setDetections((prev) => prev.filter((d) => d.id !== id));
   };
 
+  const buildDetectedParts = (): PartItem[] => {
+    const grouped = new Map<
+      string,
+      { component: ComponentSpec; quantity: number }
+    >();
+
+    detections.forEach((detection) => {
+      if (!detection.matchedComponentId) return;
+      const component = catalogComponents.find(
+        (c) => c.id === detection.matchedComponentId,
+      );
+      if (!component) return;
+
+      const existing = grouped.get(component.id);
+      if (existing) {
+        existing.quantity += 1;
+        return;
+      }
+
+      grouped.set(component.id, { component, quantity: 1 });
+    });
+
+    return Array.from(grouped.values()).map(({ component, quantity }) => ({
+      id: uid(),
+      componentId: component.id,
+      name: component.name,
+      category: component.category,
+      unit: component.unit,
+      quantity,
+      price: component.price,
+    }));
+  };
+
   const handleConfirm = () => {
     if (stage === "manual") {
       const parts: PartItem[] = manualSelected
@@ -406,19 +661,7 @@ export function DetectionModal({
       return;
     }
 
-    const parts: PartItem[] = detections
-      .filter((d) => d.matchedComponentId)
-      .map((d) => ({ detection: d, component: catalogComponents.find((c) => c.id === d.matchedComponentId) }))
-      .filter((entry): entry is { detection: DetectionResult; component: ComponentSpec } => Boolean(entry.component))
-      .map(({ detection, component }) => ({
-        id: uid(),
-        componentId: component.id,
-        name: component.name,
-        category: component.category,
-        unit: component.unit,
-        quantity: 1,
-        price: component.price,
-      }));
+    const parts = buildDetectedParts();
     onConfirm(parts);
   };
 
@@ -426,7 +669,7 @@ export function DetectionModal({
   const modalSubtitle =
     stage === "manual"
       ? "Pilih komponen dari katalog secara manual untuk ditambahkan ke RAB."
-      : "Unggah diagram SLD, deteksi otomatis dengan YOLOv8 + OCR via FastAPI.";
+      : "Unggah diagram SLD, deteksi otomatis dengan YOLOv8 via FastAPI.";
 
   return (
     <Modal
@@ -695,18 +938,44 @@ export function DetectionModal({
           <div className="grid gap-4 md:grid-cols-2">
             {/* Image preview with bounding boxes */}
             <div>
-              <div className="mb-2 flex items-center gap-2">
-                <ScanLine className="h-4 w-4 text-brand-600" />
-                <h4 className="text-sm font-semibold text-slate-700">
-                  Hasil Deteksi Visual
-                </h4>
+              <div className="mb-2 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <ScanLine className="h-4 w-4 text-brand-600" />
+                  <h4 className="text-sm font-semibold text-slate-700">
+                    Hasil Deteksi Visual
+                  </h4>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowCalibration(!showCalibration);
+                    setIsCalibrating(false);
+                    setCalibrationStart(null);
+                    setCalibrationEnd(null);
+                  }}
+                  className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-semibold transition-colors ${
+                    showCalibration
+                      ? "bg-indigo-600 text-white"
+                      : "bg-indigo-50 text-indigo-700 hover:bg-indigo-100"
+                  }`}
+                >
+                  <Ruler className="h-3.5 w-3.5" />
+                  {showCalibration ? "Tutup Kalibrasi" : "Kalibrasi Kabel"}
+                </button>
               </div>
-              <div className="relative overflow-hidden rounded-xl border border-slate-200 bg-slate-900" style={{ width: '100%' }}>
+              <div
+                ref={imageContainerRef}
+                onClick={handleImageClick}
+                className={`relative overflow-hidden rounded-xl border border-slate-200 bg-slate-900 select-none ${
+                  isCalibrating ? "cursor-crosshair ring-2 ring-indigo-500" : ""
+                }`}
+                style={{ width: '100%' }}
+              >
                 {imagePreview && imagePreview !== "sample" ? (
                   <img
                     src={imagePreview}
                     alt="SLD"
-                    className="block w-full"
+                    className="block w-full pointer-events-none"
                     style={{ height: 'auto' }}
                   />
                 ) : (
@@ -715,7 +984,7 @@ export function DetectionModal({
                 {detections.map((d, idx) => (
                   <div
                     key={d.id}
-                    className="absolute border-2 border-brand-400 bg-brand-400/10"
+                    className="absolute border-2 border-brand-400 bg-brand-400/10 pointer-events-none"
                     style={{
                       left: `${d.bbox.x}%`,
                       top: `${d.bbox.y}%`,
@@ -728,6 +997,33 @@ export function DetectionModal({
                     </span>
                   </div>
                 ))}
+
+                {/* Garis Kalibrasi & Titik Referensi */}
+                {calibrationStart && (
+                  <div
+                    className="absolute h-3 w-3 -translate-x-1.5 -translate-y-1.5 rounded-full border-2 border-white bg-indigo-500 shadow-md pointer-events-none"
+                    style={{ left: `${calibrationStart.x}%`, top: `${calibrationStart.y}%` }}
+                  />
+                )}
+                {calibrationEnd && (
+                  <div
+                    className="absolute h-3 w-3 -translate-x-1.5 -translate-y-1.5 rounded-full border-2 border-white bg-indigo-500 shadow-md pointer-events-none"
+                    style={{ left: `${calibrationEnd.x}%`, top: `${calibrationEnd.y}%` }}
+                  />
+                )}
+                {calibrationStart && calibrationEnd && (
+                  <svg className="absolute inset-0 h-full w-full pointer-events-none overflow-visible">
+                    <line
+                      x1={`${calibrationStart.x}%`}
+                      y1={`${calibrationStart.y}%`}
+                      x2={`${calibrationEnd.x}%`}
+                      y2={`${calibrationEnd.y}%`}
+                      stroke="#6366f1"
+                      strokeWidth="3"
+                      strokeDasharray="4 2"
+                    />
+                  </svg>
+                )}
               </div>
             </div>
 
@@ -765,8 +1061,7 @@ export function DetectionModal({
                               {d.label}
                             </div>
                             <div className="text-xs text-slate-500">
-                              OCR: "{d.ocrText}" · Conf:{" "}
-                              {(d.confidence * 100).toFixed(0)}%
+                              Conf: {(d.confidence * 100).toFixed(0)}%
                             </div>
                           </div>
                         </div>
@@ -816,6 +1111,144 @@ export function DetectionModal({
             </div>
           </div>
 
+          {/* SECTION KALIBRASI GARIS MANUAL & TINGGI PLAFON */}
+          {showCalibration && (
+            <div className="rounded-xl border border-indigo-200 bg-indigo-50/60 p-4 space-y-4 animate-scale-in">
+              <div className="flex items-center justify-between border-b border-indigo-200/80 pb-3">
+                <div className="flex items-center gap-2">
+                  <Calculator className="h-5 w-5 text-indigo-600" />
+                  <div>
+                    <h4 className="text-sm font-semibold text-indigo-900">Kalkulator Jarak Kabel Otomatis</h4>
+                    <p className="text-xs text-indigo-700">Hitung panjang kabel akurat berdasarkan kalibrasi garis manual + tinggi plafon</p>
+                  </div>
+                </div>
+                {scalePerPercent !== null && (
+                  <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-xs font-semibold text-emerald-700">
+                    ✓ Skala Terkalibrasi
+                  </span>
+                )}
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div>
+                  <label className="block text-xs font-medium text-indigo-900 mb-1">
+                    1. Panjang Garis Referensi (m)
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      type="number"
+                      step="0.1"
+                      min="0.1"
+                      value={manualLengthInput}
+                      onChange={(e) => {
+                        setManualLengthInput(e.target.value);
+                        if (calibrationStart && calibrationEnd) {
+                          const dx = calibrationEnd.x - calibrationStart.x;
+                          const dy = calibrationEnd.y - calibrationStart.y;
+                          const dist = Math.sqrt(dx * dx + dy * dy);
+                          const val = parseFloat(e.target.value) || 1.0;
+                          if (dist > 0) setScalePerPercent(val / dist);
+                        }
+                      }}
+                      placeholder="1.0"
+                      className="w-full rounded-lg border border-indigo-200 bg-white px-2.5 py-1.5 text-xs text-slate-800 outline-none focus:border-indigo-500"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsCalibrating(true);
+                        setCalibrationStart(null);
+                        setCalibrationEnd(null);
+                        setScalePerPercent(null);
+                      }}
+                      className={`whitespace-nowrap rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${
+                        isCalibrating
+                          ? "bg-amber-500 text-white animate-pulse"
+                          : "bg-indigo-600 text-white hover:bg-indigo-700"
+                      }`}
+                    >
+                      {isCalibrating ? "Klik 2 Titik..." : "📐 Tarik Garis"}
+                    </button>
+                  </div>
+                  <p className="mt-1 text-[10px] text-indigo-600">
+                    Klik tombol di atas, lalu klik 2 titik (misal ujung pintu) pada gambar.
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-indigo-900 mb-1">
+                    2. Tinggi Plafon (m)
+                  </label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    min="2.0"
+                    value={ceilingHeightInput}
+                    onChange={(e) => setCeilingHeightInput(e.target.value)}
+                    placeholder="3.0"
+                    className="w-full rounded-lg border border-indigo-200 bg-white px-2.5 py-1.5 text-xs text-slate-800 outline-none focus:border-indigo-500"
+                  />
+                  <p className="mt-1 text-[10px] text-indigo-600">
+                    Untuk hitung kabel turun ke dinding.
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-indigo-900 mb-1">
+                    3. Tinggi Saklar/Panel (m)
+                  </label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    min="0.5"
+                    value={switchHeightInput}
+                    onChange={(e) => setSwitchHeightInput(e.target.value)}
+                    placeholder="1.5"
+                    className="w-full rounded-lg border border-indigo-200 bg-white px-2.5 py-1.5 text-xs text-slate-800 outline-none focus:border-indigo-500"
+                  />
+                  <p className="mt-1 text-[10px] text-indigo-600">
+                    Standar ketinggian saklar/panel.
+                  </p>
+                </div>
+              </div>
+
+              {calculatedCableLength !== null && (
+                <div className="mt-2 flex flex-col gap-3 rounded-xl border border-indigo-200 bg-white p-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <div className="text-xs font-semibold text-slate-500">Estimasi Kebutuhan Kabel:</div>
+                    <div className="text-lg font-bold text-indigo-600">
+                      {calculatedCableLength} Meter{" "}
+                      <span className="text-xs font-normal text-slate-500">(Termasuk +10% Toleransi Lekukan)</span>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={cableComponentId}
+                      onChange={(e) => setCableComponentId(e.target.value)}
+                      className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-medium text-slate-700 outline-none focus:border-indigo-500 max-w-[180px]"
+                    >
+                      <option value="">Pilih Kabel di Katalog...</option>
+                      {cableComponents.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.name} ({formatRupiah(c.price)}/{c.unit})
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      disabled={!cableComponentId || !calculatedCableLength}
+                      onClick={handleAddCableToRAB}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-indigo-700 disabled:opacity-50"
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                      Tambah + Kabel ke RAB
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="space-y-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
             <div className="flex items-center gap-2 text-sm font-medium text-slate-700">
               <MessageSquareWarning className="h-4 w-4" />
@@ -854,16 +1287,168 @@ export function DetectionModal({
 
             {detectionValid === "no" && (
               <div className="space-y-3 rounded-xl border border-rose-200 bg-rose-50 p-3">
+                <div className="space-y-2 rounded-lg border border-amber-200 bg-amber-50 p-3">
+                  <div>
+                    <div className="text-sm font-semibold text-amber-900">
+                      Tandai simbol yang tidak terdeteksi
+                    </div>
+                    <p className="mt-1 text-xs text-amber-800">
+                      Isi nama simbol, lalu tekan dan tarik kotak mengelilingi simbol pada gambar.
+                    </p>
+                    <p className="mt-1 text-xs font-medium text-amber-900 sm:hidden">
+                      Di HP: gunakan satu jari untuk menggambar. Mulai scroll dari area di luar gambar.
+                    </p>
+                  </div>
+
+                  <input
+                    value={annotationLabel}
+                    onChange={(event) => setAnnotationLabel(event.target.value)}
+                    disabled={reportSent}
+                    aria-label="Nama simbol untuk bounding box"
+                    list="training-annotation-labels"
+                    placeholder="Nama simbol, contoh: MCB 1 Phase"
+                    className="w-full rounded-lg border border-amber-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-amber-400"
+                  />
+                  <datalist id="training-annotation-labels">
+                    {catalogComponents.map((component) => (
+                      <option key={component.id} value={component.name} />
+                    ))}
+                  </datalist>
+
+                  <div
+                    ref={annotationImageRef}
+                    onPointerDown={startAnnotation}
+                    onPointerMove={moveAnnotation}
+                    onPointerUp={finishAnnotation}
+                    onPointerCancel={() => {
+                      setAnnotationStart(null);
+                      setAnnotationDraft(null);
+                    }}
+                    aria-label="Area gambar untuk menggambar bounding box"
+                    className={`relative touch-none overflow-hidden rounded-lg border border-amber-300 bg-slate-900 select-none ${
+                      reportSent ? "cursor-default opacity-75" : "cursor-crosshair"
+                    }`}
+                  >
+                    {imagePreview && imagePreview !== "sample" ? (
+                      <img src={imagePreview} alt="Gambar anotasi" className="pointer-events-none block w-full" />
+                    ) : (
+                      <SampleSLD />
+                    )}
+
+                    {trainingAnnotations.map((annotation, index) => (
+                      <div
+                        key={annotation.id}
+                        className={`pointer-events-none absolute border-2 bg-amber-300/15 ${
+                          selectedAnnotationId === annotation.id
+                            ? "border-indigo-500 ring-2 ring-white/80"
+                            : "border-amber-400"
+                        }`}
+                        style={{
+                          left: `${annotation.bbox.x}%`,
+                          top: `${annotation.bbox.y}%`,
+                          width: `${annotation.bbox.width}%`,
+                          height: `${annotation.bbox.height}%`,
+                        }}
+                      >
+                        <span className="absolute left-0 top-0 max-w-full truncate bg-amber-500 px-1 py-0.5 text-[10px] font-semibold text-white">
+                          {index + 1}. {annotation.label}
+                        </span>
+                      </div>
+                    ))}
+
+                    {annotationDraft && (
+                      <div
+                        className="pointer-events-none absolute border-2 border-dashed border-white bg-amber-300/20"
+                        style={{
+                          left: `${annotationDraft.x}%`,
+                          top: `${annotationDraft.y}%`,
+                          width: `${annotationDraft.width}%`,
+                          height: `${annotationDraft.height}%`,
+                        }}
+                      />
+                    )}
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-xs font-medium text-amber-900" aria-live="polite">
+                      {trainingAnnotations.length} bounding box dibuat
+                    </span>
+                    {!reportSent && trainingAnnotations.length > 0 && (
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={undoLastAnnotation}
+                          className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-amber-300 bg-white px-3 text-xs font-semibold text-amber-900 hover:bg-amber-100"
+                        >
+                          <Undo2 className="h-3.5 w-3.5" />
+                          Urungkan
+                        </button>
+                        <button
+                          type="button"
+                          onClick={resetAnnotations}
+                          className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-rose-200 bg-white px-3 text-xs font-semibold text-rose-700 hover:bg-rose-50"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                          Hapus semua
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  {trainingAnnotations.length > 0 && (
+                    <div className="space-y-1">
+                      {trainingAnnotations.map((annotation, index) => (
+                        <div
+                          key={annotation.id}
+                          className={`flex items-center justify-between gap-2 rounded-md px-2 py-1.5 text-xs text-slate-700 ${
+                            selectedAnnotationId === annotation.id ? "bg-indigo-50 ring-1 ring-indigo-300" : "bg-white"
+                          }`}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => setSelectedAnnotationId(annotation.id)}
+                            className="min-h-8 min-w-0 flex-1 truncate text-left"
+                            aria-label={`Sorot bounding box ${annotation.label}`}
+                          >
+                            {index + 1}. {annotation.label}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={reportSent}
+                            onClick={() => removeAnnotation(annotation.id)}
+                            className="flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded text-rose-600 hover:bg-rose-50 disabled:opacity-40"
+                            aria-label={`Hapus bounding box ${annotation.label}`}
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
                 <label className="text-sm font-medium text-rose-700">
                   Jelaskan keluhan deteksi
                 </label>
                 <textarea
                   value={reportComplaint}
                   onChange={(e) => setReportComplaint(e.target.value)}
+                  disabled={reportSent}
                   rows={4}
                   className="w-full rounded-lg border border-rose-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-rose-300"
-                  placeholder="Contoh: simbol MCB di sisi kanan tidak terbaca, label OCR keliru, atau ada komponen yang terlewat."
+                    placeholder="Contoh: simbol MCB di sisi kanan tidak terbaca, label salah, atau ada komponen yang terlewat."
                 />
+
+                {!reportSent && (
+                  <div className="grid gap-1 text-xs sm:grid-cols-2" aria-live="polite">
+                    <span className={trainingAnnotations.length > 0 ? "text-emerald-700" : "text-rose-700"}>
+                      {trainingAnnotations.length > 0 ? "✓" : "○"} Minimal 1 bounding box
+                    </span>
+                    <span className={reportComplaint.trim().length >= 5 ? "text-emerald-700" : "text-rose-700"}>
+                      {reportComplaint.trim().length >= 5 ? "✓" : "○"} Keluhan minimal 5 karakter
+                    </span>
+                  </div>
+                )}
 
                 {reportError && (
                   <div className="rounded-lg border border-rose-200 bg-white px-3 py-2 text-xs text-rose-700">
@@ -873,7 +1458,7 @@ export function DetectionModal({
 
                 {reportSent ? (
                   <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
-                    Report berhasil dikirim ke admin beserta gambar deteksi.
+                    Report berhasil dikirim ke admin beserta gambar dan {trainingAnnotations.length} bounding box.
                   </div>
                 ) : (
                   <button
@@ -882,7 +1467,7 @@ export function DetectionModal({
                     onClick={() => {
                       void handleSendReport();
                     }}
-                    disabled={reportSending}
+                    disabled={reportSending || !reportReady}
                   >
                     {reportSending ? (
                       <>

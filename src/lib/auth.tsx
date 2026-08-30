@@ -29,7 +29,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const currentUser = data.session?.user ?? null;
         setSession(data.session);
         setUser(currentUser);
-        setIsAdmin(Boolean(currentUser?.email && currentUser.email.toLowerCase().includes('admin')));
         
         // Validate and refresh token if needed (< 5 minutes left)
         if (data.session?.expires_in && data.session.expires_in < 300) {
@@ -45,17 +44,40 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     initializeSession();
 
     // Listen to auth state changes
-    const { data: listener } = supabase.auth.onAuthStateChange((event, newSession) => {
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, newSession) => {
       const currentUser = newSession?.user ?? null;
       setSession(newSession);
       setUser(currentUser);
-      setIsAdmin(Boolean(currentUser?.email && currentUser.email.toLowerCase().includes('admin')));
       setLoading(false);
 
     });
 
     return () => listener?.subscription.unsubscribe();
   }, []);
+
+  useEffect(() => {
+    let active = true;
+
+    if (!user) {
+      setIsAdmin(false);
+      return () => {
+        active = false;
+      };
+    }
+
+    const loadAdminRole = async () => {
+      const { data, error } = await supabase.rpc('is_admin_actor');
+      if (active) {
+        setIsAdmin(!error && data === true);
+      }
+    };
+
+    void loadAdminRole();
+
+    return () => {
+      active = false;
+    };
+  }, [user]);
 
   const signIn = useCallback(async (email: string, password: string) => {
     const { error } = await supabase.auth.signInWithPassword({ email, password });

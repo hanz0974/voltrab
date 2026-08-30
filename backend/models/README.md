@@ -24,14 +24,14 @@ Letakkan file model ONNX (`.onnx`) Anda di folder ini.
    Jika tidak ada file class names, deteksi akan tetap berjalan tetapi label
    akan tampil sebagai `class_0`, `class_1`, dst.
 
-4. Jalankan backend FastAPI. Model ONNX akan otomatis dimuat saat pertama kali
-   endpoint `/detect` dipanggil.
+4. Jalankan backend FastAPI. Model ONNX aktif akan otomatis dimuat dari
+   Supabase saat pertama kali endpoint `/detect` dipanggil.
 
 ## Catatan
 
 - Model harus menggunakan input size 640x640 (standar YOLOv8).
 - Output harus dalam format YOLOv8: `(1, 84, 8400)` atau `(1, 8400, 84)`.
-- Jika model ONNX tidak ditemukan atau `onnxruntime` tidak terinstall,
-   backend akan otomatis fallback ke mock detections untuk demo.
-- OCR menggunakan EasyOCR dan bersifat opsional (jika tidak terinstall,
-   field `ocr_text` akan `null`).
+- Jika belum ada model aktif di Supabase, backend akan mengembalikan error
+   agar admin tahu model belum diunggah.
+- Output deteksi hanya berisi label, confidence, bounding box, dan ID
+   komponen yang cocok.

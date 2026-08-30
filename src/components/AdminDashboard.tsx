@@ -3,23 +3,23 @@ import {
   Zap,
   LogOut,
   LayoutDashboard,
-  Package,
   Brain,
   ClipboardList,
+  Users,
   ArrowLeft,
   ChevronRight,
 } from 'lucide-react';
 import type { User } from '@supabase/supabase-js';
-import { ComponentsManager } from './ComponentsManager';
 import { ModelsManager } from './ModelsManager';
 import { ReportsManager } from './ReportsManager.tsx';
+import { AdminUsersManager } from './AdminUsersManager';
 
 
-type AdminView = 'overview' | 'components' | 'models' | 'reports';
+type AdminView = 'overview' | 'models' | 'reports' | 'admins';
 const ADMIN_VIEW_STORAGE_KEY = 'voltrab-admin-view';
 
 function parseAdminView(value: string | null): AdminView {
-  if (value === 'components' || value === 'models' || value === 'overview' || value === 'reports') {
+  if (value === 'models' || value === 'overview' || value === 'reports' || value === 'admins') {
     return value;
   }
   return 'overview';
@@ -69,12 +69,6 @@ export function AdminDashboard({ user, isAdmin, onSignOut, onBackToApp }: AdminD
       description: 'Ringkasan sistem dan statistik',
     },
     {
-      id: 'components' as const,
-      label: 'Komponen Katalog',
-      icon: Package,
-      description: 'Kelola daftar komponen dan harga',
-    },
-    {
       id: 'models' as const,
       label: 'Model YOLOv8',
       icon: Brain,
@@ -85,6 +79,12 @@ export function AdminDashboard({ user, isAdmin, onSignOut, onBackToApp }: AdminD
       label: 'Report',
       icon: ClipboardList,
       description: 'Laporan keluhan hasil deteksi dari user',
+    },
+    {
+      id: 'admins' as const,
+      label: 'Kelola Admin',
+      icon: Users,
+      description: 'Tambah dan cabut akses administrator',
     },
   ];
 
@@ -181,10 +181,6 @@ export function AdminDashboard({ user, isAdmin, onSignOut, onBackToApp }: AdminD
             <div className="mt-8 rounded-xl border border-slate-200 bg-white p-6">
               <h3 className="text-lg font-semibold text-slate-900">Statistik Sistem</h3>
               <div className="mt-4 grid gap-4 sm:grid-cols-3">
-                <div className="rounded-lg bg-brand-50 p-4">
-                  <div className="text-2xl font-bold text-brand-700">20+</div>
-                  <div className="text-sm text-brand-600">Komponen Katalog</div>
-                </div>
                 <div className="rounded-lg bg-emerald-50 p-4">
                   <div className="text-2xl font-bold text-emerald-700">YOLOv8</div>
                   <div className="text-sm text-emerald-600">Model Deteksi</div>
@@ -198,12 +194,6 @@ export function AdminDashboard({ user, isAdmin, onSignOut, onBackToApp }: AdminD
           </div>
         )}
 
-        {activeView === 'components' && (
-          <div className="rounded-xl border border-slate-200 bg-white p-6">
-            <ComponentsManager />
-          </div>
-        )}
-
         {activeView === 'models' && (
           <div className="rounded-xl border border-slate-200 bg-white p-6">
             <ModelsManager />
@@ -213,6 +203,12 @@ export function AdminDashboard({ user, isAdmin, onSignOut, onBackToApp }: AdminD
         {activeView === 'reports' && (
           <div className="rounded-xl border border-slate-200 bg-white p-6">
             <ReportsManager />
+          </div>
+        )}
+
+        {activeView === 'admins' && (
+          <div className="rounded-xl border border-slate-200 bg-white p-6">
+            <AdminUsersManager currentUserId={user.id} />
           </div>
         )}
       </main>

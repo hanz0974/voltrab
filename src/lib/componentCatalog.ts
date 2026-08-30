@@ -19,7 +19,6 @@ export async function fetchActiveComponents(): Promise<ComponentSpec[]> {
     supabase
       .from('components')
       .select('id, name, category, unit, price')
-      .eq('is_active', true)
       .order('category')
       .order('name'),
     supabase.from('detail_komponen').select('component_id, jumlah_harga'),

@@ -4,9 +4,9 @@ Backend API untuk aplikasi VoltRAB (RAB Kelistrikan & Deteksi SLD).
 
 ## Fitur
 
-- **Autentikasi**: Register & Login dengan JWT (password hashing bcrypt)
+- **Autentikasi**: Access token dari Supabase Auth
 - **Penyimpanan Project**: Simpan/muat/hapus progres RAB per pengguna
-- **Deteksi Gambar**: Upload gambar SLD, deteksi komponen dengan YOLOv8 + OCR
+- **Deteksi Gambar**: Upload gambar SLD, deteksi komponen dengan YOLOv8
 
 ## Struktur
 
@@ -16,14 +16,14 @@ backend/
 │   ├── main.py              # Entry point FastAPI
 │   ├── core/
 │   │   ├── config.py        # Konfigurasi (env vars, CORS)
-│   │   ├── security.py      # JWT & password hashing
+│   │   ├── security.py      # Validasi Supabase access token
 │   │   └── database.py      # Koneksi Postgres (Supabase)
 │   ├── models/
 │   │   └── schemas.py       # Pydantic models
 │   └── routers/
-│       ├── auth.py          # /auth/register, /auth/login, /auth/me
 │       ├── projects.py      # /projects (CRUD)
-│       └── detection.py     # /detect (YOLOv8 + OCR)
+│       ├── detection.py     # /detect (YOLOv8)
+│       └── reports.py       # /reports (administrasi laporan)
 ├── uploads/                 # Folder upload gambar (sementara)
 ├── requirements.txt
 └── .env
@@ -51,7 +51,11 @@ Edit file `.env` di folder `backend/`:
 
 ```env
 SUPABASE_DB_URL=postgresql://postgres:postgres@db.xxxxx.supabase.co:5432/postgres
-JWT_SECRET=your-secret-key
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+
+# Jika memakai nama env lama, backend juga akan membaca SUPABASE_SECRET_KEY
+SUPABASE_SECRET_KEY=your-service-role-key
 ```
 
 > `SUPABASE_DB_URL` bisa didapat dari Supabase Dashboard > Settings > Database > Connection string
@@ -70,14 +74,6 @@ Buka browser: `http://localhost:8000/docs` (Swagger UI)
 
 ## API Endpoints
 
-### Auth
-
-| Method | Endpoint          | Deskripsi                    |
-|--------|-------------------|------------------------------|
-| POST   | `/auth/register`  | Daftar akun baru             |
-| POST   | `/auth/login`     | Login                        |
-| GET    | `/auth/me`        | Verifikasi token & info user |
-
 ### Projects
 
 | Method | Endpoint            | Deskripsi                    |
@@ -91,20 +87,16 @@ Buka browser: `http://localhost:8000/docs` (Swagger UI)
 
 | Method | Endpoint    | Deskripsi                              |
 |--------|-------------|----------------------------------------|
-| POST   | `/detect`   | Upload gambar SLD, deteksi YOLOv8+OCR  |
+| POST   | `/detect`   | Upload gambar SLD, deteksi YOLOv8      |
 
-## Catatan YOLOv8 + OCR
+## Catatan YOLOv8
 
-Backend akan otomatis mencoba load model YOLOv8. Jika model atau library
-`ultralytics`/`easyocr` tidak tersedia, endpoint `/detect` akan fallback ke
-**mock detections** untuk demo. Untuk deteksi sungguhan:
-
-1. Pastikan `ultralytics` dan `easyocr` terinstall: `pip install ultralytics easyocr`
-2. Letakkan model YOLOv8 terlatih di `backend/models/yolov8_sld.pt`
-3. Jika tidak ada model custom, akan menggunakan `yolov8n.pt` (pre-trained COCO)
+Backend akan membaca model aktif dari tabel Supabase `yolo_models` dan
+mengunduh file ONNX dari Supabase Storage. Jika belum ada model aktif,
+endpoint `/detect` akan mengembalikan error agar admin tahu bahwa model
+belum dimasukkan.
 
 ## Database
 
-Backend menggunakan Supabase Postgres dengan 2 tabel:
-- `users` — akun pengguna (password hash)
-- `user_projects` — progres RAB per pengguna
+Identitas pengguna berasal dari Supabase Auth (`auth.users`). Hak admin disimpan
+di `public.admin_users`; progres RAB disimpan di `public.user_projects`.

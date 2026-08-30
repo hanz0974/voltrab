@@ -1,42 +1,54 @@
-from datetime import datetime, timedelta, timezone
-import os
+from functools import lru_cache
+from uuid import UUID
+
 import jwt
+from fastapi import Depends, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jwt import PyJWKClient
-from passlib.context import CryptContext
-from app.core.config import JWT_SECRET, JWT_ALGORITHM, JWT_EXPIRE_HOURS
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+from app.core.config import SUPABASE_URL
 
-# 1. Siapkan Client untuk mengambil Public Key dari Supabase
-SUPABASE_JWKS_URL = os.getenv("SUPABASE_JWKS_URL", "https://hxcoeahvkjfoyyncxppk.supabase.co/auth/v1/.well-known/jwks.json")
-jwks_client = PyJWKClient(SUPABASE_JWKS_URL)
+bearer_scheme = HTTPBearer(auto_error=False)
 
-def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
 
-def verify_password(plain: str, hashed: str) -> bool:
-    return pwd_context.verify(plain, hashed)
+@lru_cache
+def _get_jwks_client() -> PyJWKClient:
+    if not SUPABASE_URL:
+        raise RuntimeError("SUPABASE_URL belum dikonfigurasi")
+    issuer = f"{SUPABASE_URL.rstrip('/')}/auth/v1"
+    return PyJWKClient(f"{issuer}/.well-known/jwks.json")
 
-def create_access_token(data: dict) -> str:
-    # Fungsi ini tetap dipertahankan jika kamu masih butuh sistem login lokal (opsional)
-    to_encode = data.copy()
-    expire = datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRE_HOURS)
-    to_encode.update({"exp": expire})
-    return jwt.encode(to_encode, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
-def decode_access_token(token: str) -> dict | None:
-    try:
-        # 2. Cari kunci publik yang cocok dengan token yang dikirim Frontend
-        signing_key = jwks_client.get_signing_key_from_jwt(token)
-        
-        # 3. Decode token menggunakan kunci publik Supabase tersebut
-        payload = jwt.decode(
-            token,
-            signing_key.key,
-            algorithms=["HS256", "RS256", "ES256"],
-            audience="authenticated" # Memastikan ini token login yang sah dari Supabase
+def verify_supabase_access_token(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+) -> dict:
+    """Validasi Supabase access token dari header Authorization Bearer."""
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Supabase access token diperlukan",
+            headers={"WWW-Authenticate": "Bearer"},
         )
+
+    try:
+        issuer = f"{SUPABASE_URL.rstrip('/')}/auth/v1"
+        signing_key = _get_jwks_client().get_signing_key_from_jwt(credentials.credentials)
+        payload = jwt.decode(
+            credentials.credentials,
+            signing_key.key,
+            algorithms=["RS256", "ES256"],
+            audience="authenticated",
+            issuer=issuer,
+        )
+
+        if payload.get("role") != "authenticated":
+            raise jwt.InvalidTokenError("role token bukan authenticated")
+
+        UUID(payload["sub"])
         return payload
-    except Exception as e:
-        print(f"Token ditolak: {e}")
-        return None
+    except (jwt.PyJWTError, KeyError, TypeError, ValueError, RuntimeError):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Supabase access token tidak valid",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from None

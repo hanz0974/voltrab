@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { Download, FileText, Building, DoorOpen, Package, Wallet, Layers, TrendingUp, Printer, Save, CheckCircle2, Loader2 } from 'lucide-react';
+import { Download, FileText, Building, DoorOpen, Package, Wallet, Layers, TrendingUp, Save, CheckCircle2, Loader2, AlertCircle, Edit } from 'lucide-react';
+import * as ExcelJS from 'exceljs';
 import type { Floor, ProjectState } from '../types';
 import { formatRupiah, CATEGORY_COLORS } from '../data';
 import { CategoryBadge } from './CategoryBadge';
@@ -8,14 +9,18 @@ interface SummaryStepProps {
   project: ProjectState;
   floors: Floor[];
   onBack: () => void;
+  onEditProject: () => void;
+  onEditComponents: () => void;
   onRestart: () => void;
   onSaveRab: () => Promise<{ success: boolean; error: string | null }>;
 }
 
-export function SummaryStep({ project, floors, onBack, onRestart, onSaveRab }: SummaryStepProps) {
+export function SummaryStep({ project, floors, onBack, onEditProject, onEditComponents, onRestart, onSaveRab }: SummaryStepProps) {
   const [expandedFloor, setExpandedFloor] = useState<string | null>(floors[0]?.id ?? null);
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [exportState, setExportState] = useState<'idle' | 'exporting' | 'exported' | 'error'>('idle');
+  const [exportError, setExportError] = useState<string | null>(null);
 
   const allParts = floors.flatMap((f) =>
     f.rooms.flatMap((r) => r.parts.map((p) => ({ ...p, floorName: f.name, roomName: r.name }))),
@@ -25,6 +30,50 @@ export function SummaryStep({ project, floors, onBack, onRestart, onSaveRab }: S
   const totalRooms = floors.reduce((s, f) => s + f.rooms.length, 0);
   const totalParts = allParts.length;
   const totalQty = allParts.reduce((s, p) => s + p.quantity, 0);
+  const floorsWithoutRooms = floors.filter((floor) => floor.rooms.length === 0);
+  const roomsWithoutParts = floors.flatMap((floor) =>
+    floor.rooms
+      .filter((room) => room.parts.length === 0)
+      .map((room) => ({ floorName: floor.name, roomName: room.name })),
+  );
+  const hasIncompleteData = !project.name.trim() || floors.length === 0 || floorsWithoutRooms.length > 0 || roomsWithoutParts.length > 0;
+
+  const exportFilename = `RAB-${(project.name || 'Project Tanpa Nama')
+    .replace(/[^a-zA-Z0-9-_]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_|_$/g, '')}-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.xlsx`;
+
+  const componentSummary = Object.values(
+    allParts.reduce((acc, part) => {
+      const key = part.componentId || `${part.name}-${part.category}-${part.unit}-${part.price}`;
+      if (!acc[key]) {
+        acc[key] = {
+          name: part.name,
+          category: part.category,
+          unit: part.unit,
+          price: part.price,
+          quantity: 0,
+          subtotal: 0,
+        };
+      }
+
+      acc[key].quantity += part.quantity;
+      acc[key].subtotal += part.quantity * part.price;
+      return acc;
+    }, {} as Record<string, { name: string; category: string; unit: string; price: number; quantity: number; subtotal: number }>),
+  ).sort((a, b) => b.subtotal - a.subtotal);
+
+  const detailRows = allParts.map((part, index) => ({
+    No: index + 1,
+    Lantai: part.floorName,
+    Ruangan: part.roomName,
+    Komponen: part.name,
+    Kategori: part.category,
+    Qty: part.quantity,
+    Satuan: part.unit,
+    'Harga Satuan': part.price,
+    Subtotal: part.quantity * part.price,
+  }));
 
   // by category
   const byCategory = allParts.reduce((acc, p) => {
@@ -35,18 +84,302 @@ export function SummaryStep({ project, floors, onBack, onRestart, onSaveRab }: S
     return acc;
   }, {} as Record<string, { count: number; subtotal: number }>);
 
-  const handlePrint = () => window.print();
+  const handleExportExcel = async () => {
+    if (exportState === 'exporting') return;
+    setExportState('exporting');
+    setExportError(null);
+
+    try {
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = 'VoltRAB';
+    workbook.created = new Date();
+    workbook.modified = new Date();
+    workbook.properties.date1904 = false;
+
+    const colors = {
+      navy: '1E3A8A',
+      blue: '2563EB',
+      sky: '0EA5E9',
+      teal: '14B8A6',
+      green: '16A34A',
+      amber: 'D97706',
+      slate: '64748B',
+      soft: 'F8FAFC',
+      border: 'CBD5E1',
+      white: 'FFFFFF',
+    };
+
+    const thinBorder = {
+      top: { style: 'thin' as const, color: { argb: colors.border } },
+      left: { style: 'thin' as const, color: { argb: colors.border } },
+      bottom: { style: 'thin' as const, color: { argb: colors.border } },
+      right: { style: 'thin' as const, color: { argb: colors.border } },
+    };
+
+    const moneyFormat = 'Rp #,##0';
+    const percentFormat = '0.0%';
+
+    const setTitleRow = (sheet: ExcelJS.Worksheet, title: string, subtitle?: string) => {
+      sheet.mergeCells('A1:I1');
+      sheet.getCell('A1').value = title;
+      sheet.getCell('A1').font = { bold: true, size: 16, color: { argb: colors.white } };
+      sheet.getCell('A1').alignment = { horizontal: 'center', vertical: 'middle' };
+      sheet.getCell('A1').fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: colors.navy },
+      };
+      sheet.getRow(1).height = 24;
+
+      if (subtitle) {
+        sheet.mergeCells('A2:I2');
+        sheet.getCell('A2').value = subtitle;
+        sheet.getCell('A2').font = { italic: true, color: { argb: colors.slate } };
+        sheet.getCell('A2').alignment = { horizontal: 'center', vertical: 'middle' };
+        sheet.getCell('A2').fill = {
+          type: 'pattern',
+          pattern: 'solid',
+          fgColor: { argb: colors.soft },
+        };
+        sheet.getRow(2).height = 20;
+      }
+    };
+
+    const styleHeader = (row: ExcelJS.Row, fillColor: string) => {
+      row.height = 20;
+      row.eachCell((cell) => {
+        cell.font = { bold: true, color: { argb: colors.white } };
+        cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+        cell.fill = {
+          type: 'pattern',
+          pattern: 'solid',
+          fgColor: { argb: fillColor },
+        };
+        cell.border = thinBorder;
+      });
+    };
+
+    const summarySheet = workbook.addWorksheet('Ringkasan', {
+      views: [{ state: 'frozen', ySplit: 5 }],
+      properties: { tabColor: { argb: colors.blue } },
+    });
+    setTitleRow(summarySheet, 'Ringkasan RAB Kelistrikan', 'Export otomatis dari VoltRAB');
+    summarySheet.columns = [
+      { key: 'label', width: 24 },
+      { key: 'value', width: 42 },
+    ];
+
+    const generatedAt = new Date();
+    const summaryRows = [
+      { label: 'Project', value: project.name || 'Project Tanpa Nama' },
+      { label: 'Klien', value: project.client || '-' },
+      { label: 'Lokasi', value: project.location || '-' },
+      { label: 'Tanggal', value: project.date ? new Date(project.date).toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' }) : '-' },
+      { label: 'Dibuat', value: generatedAt.toLocaleString('id-ID') },
+      { label: 'Total Lantai', value: floors.length },
+      { label: 'Total Ruangan', value: totalRooms },
+      { label: 'Total Jenis Komponen', value: totalParts },
+      { label: 'Total Unit', value: totalQty },
+      { label: 'Total Anggaran', value: grandTotal },
+    ];
+
+    summarySheet.addRow(['Informasi', 'Nilai']);
+    styleHeader(summarySheet.getRow(4), colors.blue);
+    summaryRows.forEach((item, index) => {
+      const row = summarySheet.addRow([item.label, item.value]);
+      row.getCell(1).font = { bold: true, color: { argb: colors.navy } };
+      row.getCell(2).alignment = { vertical: 'middle' };
+      if (item.label === 'Total Anggaran') {
+        row.getCell(2).font = { bold: true, color: { argb: colors.green } };
+        row.getCell(2).numFmt = moneyFormat;
+      }
+      if (typeof item.value === 'number' && item.label !== 'Total Anggaran') {
+        row.getCell(2).numFmt = '0';
+      }
+      row.eachCell((cell) => {
+        cell.border = thinBorder;
+        if (index % 2 === 0) {
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'F8FAFC' } };
+        }
+      });
+    });
+    summarySheet.getCell('A14').value = 'Catatan';
+    summarySheet.getCell('B14').value = 'Sheet ini berisi ringkasan proyek dan total anggaran.';
+    summarySheet.getCell('A14').font = { bold: true, color: { argb: colors.amber } };
+    summarySheet.getCell('B14').font = { italic: true, color: { argb: colors.slate } };
+    summarySheet.getCell('A14').border = thinBorder;
+    summarySheet.getCell('B14').border = thinBorder;
+    summarySheet.getCell('A14').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF7ED' } };
+    summarySheet.getCell('B14').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF7ED' } };
+
+    const categoryTotalsSheet = workbook.addWorksheet('Kategori', {
+      views: [{ state: 'frozen', ySplit: 4 }],
+      properties: { tabColor: { argb: colors.teal } },
+    });
+    setTitleRow(categoryTotalsSheet, 'Rekap Komponen per Kategori', 'Dikelompokkan berdasarkan kategori komponen');
+    categoryTotalsSheet.columns = [
+      { key: 'kategori', width: 24 },
+      { key: 'qty', width: 12 },
+      { key: 'subtotal', width: 18 },
+      { key: 'persen', width: 12 },
+    ];
+
+    categoryTotalsSheet.addRow(['Kategori', 'Qty', 'Subtotal', 'Kontribusi']);
+    styleHeader(categoryTotalsSheet.getRow(4), colors.teal);
+    Object.entries(byCategory)
+      .sort((a, b) => b[1].subtotal - a[1].subtotal)
+      .forEach(([cat, data], index) => {
+        const row = categoryTotalsSheet.addRow([
+          cat,
+          data.count,
+          data.subtotal,
+          grandTotal ? data.subtotal / grandTotal : 0,
+        ]);
+        row.getCell(2).numFmt = '0';
+        row.getCell(3).numFmt = moneyFormat;
+        row.getCell(4).numFmt = percentFormat;
+        row.getCell(1).font = { bold: true };
+        row.eachCell((cell) => {
+          cell.border = thinBorder;
+          if (index % 2 === 0) {
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'F8FAFC' } };
+          }
+        });
+      });
+
+    const componentSheet = workbook.addWorksheet('Komponen', {
+      views: [{ state: 'frozen', ySplit: 4 }],
+      properties: { tabColor: { argb: colors.sky } },
+    });
+    setTitleRow(componentSheet, 'Tabel Komponen', 'Rekap komponen yang sudah digabung berdasarkan nama dan kategori');
+    componentSheet.columns = [
+      { key: 'no', width: 6 },
+      { key: 'komponen', width: 32 },
+      { key: 'kategori', width: 22 },
+      { key: 'satuan', width: 12 },
+      { key: 'qty', width: 10 },
+      { key: 'harga', width: 18 },
+      { key: 'subtotal', width: 18 },
+    ];
+    componentSheet.addRow(['No', 'Komponen', 'Kategori', 'Satuan', 'Qty', 'Harga Satuan', 'Subtotal']);
+    styleHeader(componentSheet.getRow(4), colors.sky);
+    componentSummary.forEach((item, index) => {
+      const row = componentSheet.addRow([
+        index + 1,
+        item.name,
+        item.category,
+        item.unit,
+        item.quantity,
+        item.price,
+        item.subtotal,
+      ]);
+      row.getCell(5).numFmt = '0';
+      row.getCell(6).numFmt = moneyFormat;
+      row.getCell(7).numFmt = moneyFormat;
+      row.getCell(2).font = { bold: true };
+      row.eachCell((cell) => {
+        cell.border = thinBorder;
+        if (index % 2 === 0) {
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'F8FAFC' } };
+        }
+      });
+    });
+    const componentTotalRow = componentSheet.addRow(['', 'TOTAL', '', '', totalQty, '', grandTotal]);
+    componentTotalRow.getCell(2).font = { bold: true, color: { argb: colors.white } };
+    componentTotalRow.getCell(5).numFmt = '0';
+    componentTotalRow.getCell(7).numFmt = moneyFormat;
+    componentTotalRow.eachCell((cell) => {
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colors.navy } };
+      cell.font = { bold: true, color: { argb: colors.white } };
+      cell.border = thinBorder;
+    });
+
+    const detailSheet = workbook.addWorksheet('Detail Komponen', {
+      views: [{ state: 'frozen', ySplit: 4 }],
+      properties: { tabColor: { argb: colors.amber } },
+    });
+    setTitleRow(detailSheet, 'Detail Komponen', 'Daftar lengkap per lantai dan ruangan');
+    detailSheet.columns = [
+      { key: 'no', width: 6 },
+      { key: 'lantai', width: 20 },
+      { key: 'ruangan', width: 20 },
+      { key: 'komponen', width: 32 },
+      { key: 'kategori', width: 22 },
+      { key: 'qty', width: 8 },
+      { key: 'satuan', width: 12 },
+      { key: 'harga', width: 18 },
+      { key: 'subtotal', width: 18 },
+    ];
+    detailSheet.addRow(['No', 'Lantai', 'Ruangan', 'Komponen', 'Kategori', 'Qty', 'Satuan', 'Harga Satuan', 'Subtotal']);
+    styleHeader(detailSheet.getRow(4), colors.amber);
+    detailRows.forEach((item, index) => {
+      const row = detailSheet.addRow([
+        item.No,
+        item.Lantai,
+        item.Ruangan,
+        item.Komponen,
+        item.Kategori,
+        item.Qty,
+        item.Satuan,
+        item['Harga Satuan'],
+        item.Subtotal,
+      ]);
+      row.getCell(6).numFmt = '0';
+      row.getCell(8).numFmt = moneyFormat;
+      row.getCell(9).numFmt = moneyFormat;
+      row.eachCell((cell) => {
+        cell.border = thinBorder;
+        if (index % 2 === 0) {
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFDF7ED' } };
+        }
+      });
+    });
+    const detailTotalRow = detailSheet.addRow(['', '', '', 'TOTAL', '', totalQty, '', '', grandTotal]);
+    detailTotalRow.getCell(4).font = { bold: true, color: { argb: colors.white } };
+    detailTotalRow.getCell(6).numFmt = '0';
+    detailTotalRow.getCell(9).numFmt = moneyFormat;
+    detailTotalRow.eachCell((cell) => {
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colors.navy } };
+      cell.font = { bold: true, color: { argb: colors.white } };
+      cell.border = thinBorder;
+    });
+
+    const buffer = await workbook.xlsx.writeBuffer();
+    const blob = new Blob([buffer], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = exportFilename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    setExportState('exported');
+    window.setTimeout(() => setExportState('idle'), 4000);
+    } catch (error) {
+      setExportState('error');
+      setExportError(error instanceof Error ? error.message : 'File Excel gagal dibuat.');
+    }
+  };
 
   const handleSave = async () => {
     setSaveState('saving');
     setSaveError(null);
-    const result = await onSaveRab();
-    if (result.success) {
-      setSaveState('saved');
-      setTimeout(() => setSaveState('idle'), 3000);
-    } else {
+    try {
+      const result = await onSaveRab();
+      if (result.success) {
+        setSaveState('saved');
+        setTimeout(() => setSaveState('idle'), 3000);
+      } else {
+        setSaveState('error');
+        setSaveError(result.error);
+        setTimeout(() => setSaveState('idle'), 5000);
+      }
+    } catch (error) {
       setSaveState('error');
-      setSaveError(result.error);
+      setSaveError(error instanceof Error ? error.message : 'Terjadi kesalahan saat menyimpan RAB.');
       setTimeout(() => setSaveState('idle'), 5000);
     }
   };
@@ -59,13 +392,9 @@ export function SummaryStep({ project, floors, onBack, onRestart, onSaveRab }: S
           <p className="mt-1 text-sm text-slate-500">Rekapitulasi seluruh komponen dari semua lantai & ruangan.</p>
         </div>
         <div className="flex flex-wrap gap-2 print:hidden">
-          <button className="btn-secondary" onClick={handlePrint}>
-            <Printer className="h-4 w-4" />
-            Cetak
-          </button>
-          <button className="btn-secondary" onClick={handlePrint}>
-            <Download className="h-4 w-4" />
-            Export PDF
+          <button className="btn-secondary" onClick={() => void handleExportExcel()} disabled={exportState === 'exporting'}>
+            {exportState === 'exporting' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+            {exportState === 'exporting' ? 'Membuat Excel...' : 'Export Excel'}
           </button>
           <button
             className="btn-primary"
@@ -80,6 +409,47 @@ export function SummaryStep({ project, floors, onBack, onRestart, onSaveRab }: S
           </button>
         </div>
       </div>
+
+      {hasIncompleteData && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-4" role="status">
+          <div className="flex items-start gap-3">
+            <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-amber-700" />
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-semibold text-amber-900">Ada data yang belum lengkap</p>
+              <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-amber-800">
+                {!project.name.trim() && <li>Nama project belum diisi.</li>}
+                {floors.length === 0 && <li>Belum ada lantai.</li>}
+                {floorsWithoutRooms.length > 0 && <li>{floorsWithoutRooms.length} lantai belum memiliki ruangan.</li>}
+                {roomsWithoutParts.length > 0 && <li>{roomsWithoutParts.length} ruangan belum memiliki komponen.</li>}
+              </ul>
+              <div className="mt-3 flex flex-wrap gap-2 print:hidden">
+                {!project.name.trim() && (
+                  <button type="button" className="btn-secondary" onClick={onEditProject}>
+                    <Edit className="h-4 w-4" /> Edit Project
+                  </button>
+                )}
+                {(floors.length === 0 || floorsWithoutRooms.length > 0 || roomsWithoutParts.length > 0) && (
+                  <button type="button" className="btn-secondary" onClick={onEditComponents}>
+                    <Edit className="h-4 w-4" /> Edit Komponen
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {exportState === 'exported' && (
+        <div className="flex items-center gap-2 rounded-xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700" role="status">
+          <CheckCircle2 className="h-4 w-4 shrink-0" />
+          File <span className="font-semibold">{exportFilename}</span> berhasil dibuat dan diunduh.
+        </div>
+      )}
+      {exportState === 'error' && exportError && (
+        <div className="rounded-xl bg-rose-50 px-4 py-3 text-sm text-rose-700" role="alert">
+          Gagal export Excel: {exportError}
+        </div>
+      )}
 
       {saveState === 'error' && saveError && (
         <div className="rounded-xl bg-rose-50 px-4 py-3 text-sm text-rose-700 animate-fade-in">
@@ -127,6 +497,13 @@ export function SummaryStep({ project, floors, onBack, onRestart, onSaveRab }: S
           Rincian per Kategori
         </h3>
         <div className="space-y-3">
+          {Object.keys(byCategory).length === 0 && (
+            <div className="rounded-xl border-2 border-dashed border-slate-200 px-4 py-8 text-center">
+              <Package className="mx-auto h-9 w-9 text-slate-300" />
+              <p className="mt-2 text-sm font-medium text-slate-600">Belum ada komponen untuk diringkas.</p>
+              <button type="button" className="btn-secondary mt-4 print:hidden" onClick={onEditComponents}>Tambah Komponen</button>
+            </div>
+          )}
           {Object.entries(byCategory)
             .sort((a, b) => b[1].subtotal - a[1].subtotal)
             .map(([cat, data]) => {
@@ -180,13 +557,13 @@ export function SummaryStep({ project, floors, onBack, onRestart, onSaveRab }: S
                 </div>
                 <div className="text-right">
                   <div className="text-lg font-bold text-brand-700">{formatRupiah(floorTotal)}</div>
-                  <div className="text-xs text-slate-400">{((floorTotal / grandTotal) * 100).toFixed(1)}% dari total</div>
+                  <div className="text-xs text-slate-400">{(grandTotal ? (floorTotal / grandTotal) * 100 : 0).toFixed(1)}% dari total</div>
                 </div>
               </button>
               {isExpanded && (
                 <div className="border-t border-slate-100 animate-fade-in">
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-sm">
+                  <div className="overflow-x-auto" tabIndex={0} aria-label={`Tabel rincian ${floor.name}. Geser horizontal pada layar kecil.`}>
+                    <table className="min-w-[760px] w-full text-sm">
                       <thead>
                         <tr className="bg-slate-50/60 text-left text-xs uppercase tracking-wide text-slate-500">
                           <th className="px-5 py-2.5 font-semibold">Ruangan</th>

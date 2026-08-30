@@ -11,6 +11,8 @@ import {
   Edit,
   Image as ImageIcon,
   Loader2,
+  Settings,
+  Building2,
 } from "lucide-react";
 import type {
   Floor,
@@ -23,6 +25,7 @@ import { CATEGORY_COLORS, formatRupiah, uid } from "../data";
 import { CategoryBadge } from "./CategoryBadge";
 import { Modal } from "./Modal";
 import { DetectionModal } from "./DetectionModal";
+import { ComponentsManager } from "./ComponentsManager";
 import { supabase } from "../lib/supabase";
 import { getBiayaUmumKoef } from "../lib/biayaUmumSetting";
 
@@ -55,8 +58,6 @@ interface ComponentsStepProps {
   onChange: (floors: Floor[]) => void;
   onNext: () => void;
   onBack: () => void;
-  floorCount: number;
-  onFloorCountChange: (count: number) => void;
 }
 
 export function ComponentsStep({
@@ -65,8 +66,6 @@ export function ComponentsStep({
   onChange,
   onNext,
   onBack,
-  floorCount,
-  onFloorCountChange,
 }: ComponentsStepProps) {
   const [expandedId, setExpandedId] = useState<string | null>(
     floors[0]?.id ?? null,
@@ -105,6 +104,7 @@ export function ComponentsStep({
   const [detailViewerRows, setDetailViewerRows] = useState<DetailKomponenView[]>([]);
   const [detailViewerPartName, setDetailViewerPartName] = useState("");
   const [biayaUmumKoef, setBiayaUmumKoef] = useState(0.1);
+  const [catalogManagerOpen, setCatalogManagerOpen] = useState(false);
 
   useEffect(() => {
     if (!activeRoom) {
@@ -318,8 +318,30 @@ export function ComponentsStep({
 
   const handleDetectionConfirm = (parts: PartItem[]) => {
     if (!activeRoom || !currentRoom) return;
+
+    const mergedParts = [...currentRoom.parts];
+    parts.forEach((part) => {
+      const existingIndex = mergedParts.findIndex(
+        (item) =>
+          item.componentId === part.componentId &&
+          item.unit === part.unit &&
+          item.price === part.price,
+      );
+
+      if (existingIndex >= 0) {
+        const existing = mergedParts[existingIndex];
+        mergedParts[existingIndex] = {
+          ...existing,
+          quantity: existing.quantity + part.quantity,
+        };
+        return;
+      }
+
+      mergedParts.push(part);
+    });
+
     updateRoom(activeRoom.floorId, activeRoom.roomId, {
-      parts: [...currentRoom.parts, ...parts],
+      parts: mergedParts,
       inputMode: "detect",
       detectionStatus: parts.length > 0 ? "done" : "error",
     });
@@ -398,8 +420,8 @@ export function ComponentsStep({
                 Atur lantai, ruangan, lalu isi komponen untuk setiap ruangan.
               </p>
             </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="rounded-xl bg-white px-3 py-2 shadow-soft min-w-[140px]">
+            <div className="flex flex-wrap items-stretch justify-end gap-2">
+              <div className="min-w-[140px] flex-1 rounded-xl bg-white px-3 py-2 shadow-soft">
                 <div className="text-[11px] uppercase tracking-wide text-slate-400">
                   Total Lantai
                 </div>
@@ -407,7 +429,7 @@ export function ComponentsStep({
                   {floors.length}
                 </div>
               </div>
-              <div className="rounded-xl bg-white px-3 py-2 shadow-soft min-w-[140px]">
+              <div className="min-w-[140px] flex-1 rounded-xl bg-white px-3 py-2 shadow-soft">
                 <div className="flex items-center justify-between gap-3 min-w-0">
                   <div className="min-w-0">
                     <div className="text-[11px] uppercase tracking-wide text-slate-400">
@@ -419,11 +441,21 @@ export function ComponentsStep({
                   </div>
                 </div>
               </div>
-              <div className="rounded-3xl px-4 py-3 text-slate-400">
+              <div className="flex min-w-[180px] flex-1">
+                <button
+                  type="button"
+                  onClick={() => setCatalogManagerOpen(true)}
+                  className="inline-flex w-full items-center justify-center gap-2 rounded-2xl border border-brand-200 bg-white px-4 py-3 text-sm font-semibold text-brand-700 transition hover:bg-brand-50"
+                >
+                  <Settings className="h-4 w-4" />
+                  Kelola Komponen Saya
+                </button>
+              </div>
+              <div className="flex min-w-[160px] flex-1">
                 <button
                   type="button"
                   onClick={() => setAddFloorsOpen(true)}
-                  className="w-full rounded-2xl bg-brand-700 px-4 py-3 text-sm font-semibold text-white transition hover:bg-brand-800"
+                  className="w-full rounded-2xl bg-brand-700 px-4 py-2 text-sm font-semibold text-white transition hover:bg-brand-800"
                 >
                   Tambah Lantai
                 </button>
@@ -433,7 +465,18 @@ export function ComponentsStep({
         </div>
         <div className="grid gap-6 xl:grid-cols-[minmax(300px,360px)_1fr] py-4">
           <div className="space-y-4">
-            {floors.map((floor, idx) => (
+            {floors.length === 0 && (
+              <div className="rounded-2xl border-2 border-dashed border-slate-200 bg-white px-5 py-8 text-center">
+                <Building2 className="mx-auto h-10 w-10 text-slate-300" />
+                <p className="mt-3 text-sm font-semibold text-slate-700">Belum ada lantai</p>
+                <p className="mt-1 text-xs text-slate-500">Tambahkan lantai pertama untuk mulai menyusun ruangan.</p>
+                <button type="button" className="btn-primary mt-4" onClick={() => setAddFloorsOpen(true)}>
+                  <Plus className="h-4 w-4" />
+                  Tambah Lantai Pertama
+                </button>
+              </div>
+            )}
+            {floors.map((floor) => (
               <div key={floor.id} className="card-base overflow-hidden">
                 <div
                   role="button"
@@ -483,8 +526,9 @@ export function ComponentsStep({
                     </div>
 
                     {floor.rooms.length === 0 ? (
-                      <div className="rounded-xl border-2 border-dashed border-slate-200 py-6 text-center text-sm text-slate-500">
-                        Belum ada ruangan.
+                      <div className="rounded-xl border-2 border-dashed border-slate-200 px-4 py-6 text-center">
+                        <p className="text-sm font-medium text-slate-600">Belum ada ruangan.</p>
+                        <p className="mt-1 text-xs text-slate-500">Tambahkan ruangan pertama pada {floor.name}.</p>
                       </div>
                     ) : (
                       <div className="space-y-2">
@@ -803,9 +847,28 @@ export function ComponentsStep({
                     {currentRoom.parts.length === 0 ? (
                       <div className="py-12 text-center">
                         <Package className="mx-auto h-10 w-10 text-slate-300" />
-                        <p className="mt-2 text-sm text-slate-500">
-                          Belum ada komponen. Unggah SLD untuk memulai deteksi.
+                        <p className="mt-3 text-sm font-semibold text-slate-700">
+                          Belum ada komponen
                         </p>
+                        <p className="mt-1 text-xs text-slate-500">Pilih cara menambahkan komponen ke ruangan ini.</p>
+                        <div className="mt-4 flex flex-col justify-center gap-2 px-4 sm:flex-row">
+                          <button
+                            type="button"
+                            className="btn-primary"
+                            onClick={() => setDetectionOpen(true)}
+                          >
+                            <ScanLine className="h-4 w-4" />
+                            Upload dan Deteksi SLD
+                          </button>
+                          <button
+                            type="button"
+                            className="btn-secondary"
+                            onClick={() => setPickerOpen(true)}
+                          >
+                            <Plus className="h-4 w-4" />
+                            Pilih dari Katalog
+                          </button>
+                        </div>
                       </div>
                     ) : (
                       <div className="overflow-x-auto">
@@ -920,9 +983,37 @@ export function ComponentsStep({
             ) : (
               <div className="card-base py-16 text-center">
                 <Package className="mx-auto h-10 w-10 text-slate-300" />
-                <p className="mt-2 text-sm text-slate-500">
-                  Pilih ruangan untuk mulai mengisi komponen.
+                <p className="mt-3 text-sm font-semibold text-slate-700">
+                  {totalRooms === 0 ? "Belum ada ruangan" : "Belum ada ruangan yang dipilih"}
                 </p>
+                <p className="mt-1 text-sm text-slate-500">
+                  {totalRooms === 0
+                    ? "Tambahkan ruangan pada salah satu lantai untuk mulai mengisi komponen."
+                    : "Pilih salah satu ruangan untuk melihat dan mengisi komponennya."}
+                </p>
+                {totalRooms === 0 && floors[0] && (
+                  <button
+                    type="button"
+                    className="btn-primary mt-4"
+                    onClick={() => setEditingRoom({ floorId: floors[0].id, room: null })}
+                  >
+                    <Plus className="h-4 w-4" />
+                    Tambah Ruangan Pertama
+                  </button>
+                )}
+                {totalRooms > 0 && (() => {
+                  const firstFloor = floors.find((floor) => floor.rooms.length > 0);
+                  const firstRoom = firstFloor?.rooms[0];
+                  return firstFloor && firstRoom ? (
+                    <button
+                      type="button"
+                      className="btn-primary mt-4"
+                      onClick={() => setActiveRoom({ floorId: firstFloor.id, roomId: firstRoom.id })}
+                    >
+                      Pilih {firstRoom.name}
+                    </button>
+                  ) : null;
+                })()}
               </div>
             )}
           </div>
@@ -969,6 +1060,18 @@ export function ComponentsStep({
         catalogComponents={catalogComponents}
         catalogLoading={catalogLoading}
       />
+
+      <Modal
+        open={catalogManagerOpen}
+        onClose={() => setCatalogManagerOpen(false)}
+        title="Katalog Komponen Saya"
+        subtitle="Tambah, ubah, dan hitung komponen khusus akun Anda."
+        maxWidth="max-w-7xl"
+      >
+        <div className="min-h-[65vh] pr-1">
+          <ComponentsManager />
+        </div>
+      </Modal>
 
       <Modal
         open={confirmClearOpen}
@@ -1284,6 +1387,9 @@ function AddRoomModal({
   onSave: (name: string) => void;
 }) {
   const [name, setName] = useState("");
+  useEffect(() => {
+    if (!open) setName("");
+  }, [open]);
   const presets = [
     "Ruang Tamu",
     "Kamar Tidur",
@@ -1316,13 +1422,23 @@ function AddRoomModal({
             </button>
           ))}
         </div>
+        <label htmlFor="new-room-name" className="label-base">Nama ruangan *</label>
         <input
+          id="new-room-name"
           autoFocus
           className="input-base"
           placeholder="Nama ruangan"
           value={name}
           onChange={(e) => setName(e.target.value)}
+          required
+          aria-invalid={!name.trim()}
+          aria-describedby={!name.trim() ? "new-room-name-help" : undefined}
         />
+        {!name.trim() && (
+          <p id="new-room-name-help" className="-mt-2 text-xs font-medium text-rose-600">
+            Pilih preset atau isi nama ruangan untuk menyimpan.
+          </p>
+        )}
         <div className="flex justify-end gap-2">
           <button type="button" className="btn-ghost" onClick={onClose}>
             Batal
@@ -1435,8 +1551,21 @@ function ComponentPicker({
             </div>
           ))}
           {!catalogLoading && filtered.length === 0 && (
-            <div className="py-8 text-center text-sm text-slate-500">
-              Komponen tidak ditemukan atau semua komponen sedang nonaktif.
+            <div className="py-8 text-center">
+              <Package className="mx-auto h-9 w-9 text-slate-300" />
+              <p className="mt-2 text-sm font-medium text-slate-600">
+                {search.trim() ? "Komponen tidak ditemukan" : "Katalog komponen masih kosong"}
+              </p>
+              <p className="mt-1 text-xs text-slate-500">
+                {search.trim()
+                  ? "Coba gunakan nama atau kategori yang berbeda."
+                  : "Tambahkan komponen melalui menu Kelola Komponen Saya."}
+              </p>
+              {search.trim() && (
+                <button type="button" className="btn-secondary mt-4" onClick={() => setSearch("")}>
+                  Hapus Pencarian
+                </button>
+              )}
             </div>
           )}
         </div>
