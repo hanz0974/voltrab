@@ -4,6 +4,23 @@ import * as ExcelJS from 'exceljs';
 import type { Floor, ProjectState } from '../types';
 import { formatRupiah, CATEGORY_COLORS } from '../data';
 import { CategoryBadge } from './CategoryBadge';
+import { supabase } from '../lib/supabase';
+import { getBiayaUmumKoef } from '../lib/biayaUmumSetting';
+
+type AhspDetailType = 'A. Tenaga kerja' | 'B. Bahan' | 'C. Peralatan';
+
+interface AhspDetailRow {
+  id: string;
+  component_id: string;
+  jenis: AhspDetailType;
+  uraian: string;
+  satuan: string;
+  koefisien: number | string;
+  harga_satuan: number | string;
+  jumlah_harga: number | string;
+}
+
+const AHSP_DETAIL_TYPES: AhspDetailType[] = ['A. Tenaga kerja', 'B. Bahan', 'C. Peralatan'];
 
 interface SummaryStepProps {
   project: ProjectState;
@@ -12,10 +29,11 @@ interface SummaryStepProps {
   onEditProject: () => void;
   onEditComponents: () => void;
   onRestart: () => void;
+  onSaveProject: () => Promise<{ success: boolean; error: string | null }>;
   onSaveRab: () => Promise<{ success: boolean; error: string | null }>;
 }
 
-export function SummaryStep({ project, floors, onBack, onEditProject, onEditComponents, onRestart, onSaveRab }: SummaryStepProps) {
+export function SummaryStep({ project, floors, onBack, onEditProject, onEditComponents, onRestart, onSaveProject, onSaveRab }: SummaryStepProps) {
   const [expandedFloor, setExpandedFloor] = useState<string | null>(floors[0]?.id ?? null);
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -48,6 +66,7 @@ export function SummaryStep({ project, floors, onBack, onEditProject, onEditComp
       const key = part.componentId || `${part.name}-${part.category}-${part.unit}-${part.price}`;
       if (!acc[key]) {
         acc[key] = {
+          componentId: part.componentId,
           name: part.name,
           category: part.category,
           unit: part.unit,
@@ -60,20 +79,8 @@ export function SummaryStep({ project, floors, onBack, onEditProject, onEditComp
       acc[key].quantity += part.quantity;
       acc[key].subtotal += part.quantity * part.price;
       return acc;
-    }, {} as Record<string, { name: string; category: string; unit: string; price: number; quantity: number; subtotal: number }>),
+    }, {} as Record<string, { componentId: string; name: string; category: string; unit: string; price: number; quantity: number; subtotal: number }>),
   ).sort((a, b) => b.subtotal - a.subtotal);
-
-  const detailRows = allParts.map((part, index) => ({
-    No: index + 1,
-    Lantai: part.floorName,
-    Ruangan: part.roomName,
-    Komponen: part.name,
-    Kategori: part.category,
-    Qty: part.quantity,
-    Satuan: part.unit,
-    'Harga Satuan': part.price,
-    Subtotal: part.quantity * part.price,
-  }));
 
   // by category
   const byCategory = allParts.reduce((acc, p) => {
@@ -90,6 +97,24 @@ export function SummaryStep({ project, floors, onBack, onEditProject, onEditComp
     setExportError(null);
 
     try {
+    const saveResult = await onSaveProject();
+    if (!saveResult.success) {
+      throw new Error(saveResult.error || 'Proyek gagal disimpan sebelum export Excel.');
+    }
+    const componentIds = [...new Set(componentSummary.map((item) => item.componentId).filter(Boolean))];
+    const [{ data: detailData, error: detailError }, biayaUmumKoef] = await Promise.all([
+      componentIds.length > 0
+        ? supabase
+            .from('detail_komponen')
+            .select('id, component_id, jenis, uraian, satuan, koefisien, harga_satuan, jumlah_harga')
+            .in('component_id', componentIds)
+            .order('created_at', { ascending: true })
+        : Promise.resolve({ data: [], error: null }),
+      getBiayaUmumKoef(),
+    ]);
+    if (detailError) throw new Error(`Detail AHSP gagal dimuat: ${detailError.message}`);
+    const ahspDetails = (detailData ?? []) as AhspDetailRow[];
+
     const workbook = new ExcelJS.Workbook();
     workbook.creator = 'VoltRAB';
     workbook.created = new Date();
@@ -100,7 +125,6 @@ export function SummaryStep({ project, floors, onBack, onEditProject, onEditComp
       navy: '1E3A8A',
       blue: '2563EB',
       sky: '0EA5E9',
-      teal: '14B8A6',
       green: '16A34A',
       amber: 'D97706',
       slate: '64748B',
@@ -117,7 +141,6 @@ export function SummaryStep({ project, floors, onBack, onEditProject, onEditComp
     };
 
     const moneyFormat = 'Rp #,##0';
-    const percentFormat = '0.0%';
 
     const setTitleRow = (sheet: ExcelJS.Worksheet, title: string, subtitle?: string) => {
       sheet.mergeCells('A1:I1');
@@ -212,41 +235,6 @@ export function SummaryStep({ project, floors, onBack, onEditProject, onEditComp
     summarySheet.getCell('A14').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF7ED' } };
     summarySheet.getCell('B14').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF7ED' } };
 
-    const categoryTotalsSheet = workbook.addWorksheet('Kategori', {
-      views: [{ state: 'frozen', ySplit: 4 }],
-      properties: { tabColor: { argb: colors.teal } },
-    });
-    setTitleRow(categoryTotalsSheet, 'Rekap Komponen per Kategori', 'Dikelompokkan berdasarkan kategori komponen');
-    categoryTotalsSheet.columns = [
-      { key: 'kategori', width: 24 },
-      { key: 'qty', width: 12 },
-      { key: 'subtotal', width: 18 },
-      { key: 'persen', width: 12 },
-    ];
-
-    categoryTotalsSheet.addRow(['Kategori', 'Qty', 'Subtotal', 'Kontribusi']);
-    styleHeader(categoryTotalsSheet.getRow(4), colors.teal);
-    Object.entries(byCategory)
-      .sort((a, b) => b[1].subtotal - a[1].subtotal)
-      .forEach(([cat, data], index) => {
-        const row = categoryTotalsSheet.addRow([
-          cat,
-          data.count,
-          data.subtotal,
-          grandTotal ? data.subtotal / grandTotal : 0,
-        ]);
-        row.getCell(2).numFmt = '0';
-        row.getCell(3).numFmt = moneyFormat;
-        row.getCell(4).numFmt = percentFormat;
-        row.getCell(1).font = { bold: true };
-        row.eachCell((cell) => {
-          cell.border = thinBorder;
-          if (index % 2 === 0) {
-            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'F8FAFC' } };
-          }
-        });
-      });
-
     const componentSheet = workbook.addWorksheet('Komponen', {
       views: [{ state: 'frozen', ySplit: 4 }],
       properties: { tabColor: { argb: colors.sky } },
@@ -263,6 +251,7 @@ export function SummaryStep({ project, floors, onBack, onEditProject, onEditComp
     ];
     componentSheet.addRow(['No', 'Komponen', 'Kategori', 'Satuan', 'Qty', 'Harga Satuan', 'Subtotal']);
     styleHeader(componentSheet.getRow(4), colors.sky);
+    const componentRows = new Map<string, ExcelJS.Row>();
     componentSummary.forEach((item, index) => {
       const row = componentSheet.addRow([
         index + 1,
@@ -277,6 +266,7 @@ export function SummaryStep({ project, floors, onBack, onEditProject, onEditComp
       row.getCell(6).numFmt = moneyFormat;
       row.getCell(7).numFmt = moneyFormat;
       row.getCell(2).font = { bold: true };
+      componentRows.set(item.componentId, row);
       row.eachCell((cell) => {
         cell.border = thinBorder;
         if (index % 2 === 0) {
@@ -298,50 +288,93 @@ export function SummaryStep({ project, floors, onBack, onEditProject, onEditComp
       views: [{ state: 'frozen', ySplit: 4 }],
       properties: { tabColor: { argb: colors.amber } },
     });
-    setTitleRow(detailSheet, 'Detail Komponen', 'Daftar lengkap per lantai dan ruangan');
+    setTitleRow(detailSheet, 'Detail Komponen', 'Analisis Harga Satuan Pekerjaan (AHSP) komponen yang dipasang');
     detailSheet.columns = [
       { key: 'no', width: 6 },
-      { key: 'lantai', width: 20 },
-      { key: 'ruangan', width: 20 },
-      { key: 'komponen', width: 32 },
-      { key: 'kategori', width: 22 },
-      { key: 'qty', width: 8 },
+      { key: 'uraian', width: 48 },
       { key: 'satuan', width: 12 },
-      { key: 'harga', width: 18 },
-      { key: 'subtotal', width: 18 },
+      { key: 'koefisien', width: 14 },
+      { key: 'harga', width: 19 },
+      { key: 'jumlah', width: 19 },
     ];
-    detailSheet.addRow(['No', 'Lantai', 'Ruangan', 'Komponen', 'Kategori', 'Qty', 'Satuan', 'Harga Satuan', 'Subtotal']);
-    styleHeader(detailSheet.getRow(4), colors.amber);
-    detailRows.forEach((item, index) => {
-      const row = detailSheet.addRow([
-        item.No,
-        item.Lantai,
-        item.Ruangan,
-        item.Komponen,
-        item.Kategori,
-        item.Qty,
-        item.Satuan,
-        item['Harga Satuan'],
-        item.Subtotal,
-      ]);
-      row.getCell(6).numFmt = '0';
-      row.getCell(8).numFmt = moneyFormat;
-      row.getCell(9).numFmt = moneyFormat;
-      row.eachCell((cell) => {
-        cell.border = thinBorder;
-        if (index % 2 === 0) {
-          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFDF7ED' } };
-        }
+
+    const detailAnchors = new Map<string, number>();
+    componentSummary.forEach((component, componentIndex) => {
+      if (componentIndex > 0) detailSheet.addRow([]);
+      const anchorRow = detailSheet.rowCount + 1;
+      detailAnchors.set(component.componentId, anchorRow);
+      detailSheet.mergeCells(anchorRow, 1, anchorRow, 6);
+      const componentTitle = detailSheet.getCell(anchorRow, 1);
+      componentTitle.value = `${componentIndex + 1}. ${component.name}`;
+      componentTitle.font = { bold: true, size: 12, color: { argb: colors.white } };
+      componentTitle.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colors.navy } };
+      componentTitle.alignment = { vertical: 'middle' };
+      detailSheet.getRow(anchorRow).height = 22;
+
+      const header = detailSheet.addRow(['No', 'Uraian', 'Satuan', 'Koefisien', 'Harga Satuan', 'Jumlah Harga']);
+      styleHeader(header, colors.amber);
+      const rows = ahspDetails.filter((detail) => detail.component_id === component.componentId);
+
+      if (rows.length === 0) {
+        const emptyRow = detailSheet.addRow(['', 'Detail AHSP belum tersedia untuk komponen ini.', '', '', '', '']);
+        emptyRow.getCell(2).font = { italic: true, color: { argb: colors.slate } };
+        emptyRow.eachCell((cell) => { cell.border = thinBorder; });
+      } else {
+        let detailNumber = 1;
+        AHSP_DETAIL_TYPES.forEach((type) => {
+          const groupRow = detailSheet.addRow(['', type, '', '', '', '']);
+          detailSheet.mergeCells(groupRow.number, 2, groupRow.number, 6);
+          groupRow.getCell(2).font = { bold: true, color: { argb: colors.navy } };
+          groupRow.getCell(2).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'E2E8F0' } };
+          groupRow.eachCell((cell) => { cell.border = thinBorder; });
+
+          rows.filter((detail) => detail.jenis === type).forEach((detail) => {
+            const row = detailSheet.addRow([
+              detailNumber,
+              detail.uraian,
+              detail.satuan,
+              Number(detail.koefisien),
+              Number(detail.harga_satuan),
+              Number(detail.jumlah_harga),
+            ]);
+            detailNumber += 1;
+            row.getCell(4).numFmt = '0.0000';
+            row.getCell(5).numFmt = moneyFormat;
+            row.getCell(6).numFmt = moneyFormat;
+            row.eachCell((cell) => { cell.border = thinBorder; });
+          });
+        });
+      }
+
+      const dTotal = rows.reduce((sum, detail) => sum + Number(detail.jumlah_harga || 0), 0);
+      const eTotal = dTotal * biayaUmumKoef;
+      const totals = [
+        ['D. Jumlah A + B + C', '', '', '', dTotal],
+        ['E. Biaya Umum dan Keuntungan', '', `${biayaUmumKoef * 100}%`, '', eTotal],
+        ['F. Harga Satuan Pekerjaan (D + E)', '', '', '', dTotal + eTotal],
+      ];
+      totals.forEach((values, index) => {
+        const row = detailSheet.addRow(['', ...values]);
+        row.getCell(2).font = { bold: true, color: { argb: index === 2 ? colors.green : colors.navy } };
+        row.getCell(6).numFmt = moneyFormat;
+        row.eachCell((cell) => {
+          cell.border = thinBorder;
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: index === 2 ? 'ECFDF5' : 'F8FAFC' } };
+        });
       });
     });
-    const detailTotalRow = detailSheet.addRow(['', '', '', 'TOTAL', '', totalQty, '', '', grandTotal]);
-    detailTotalRow.getCell(4).font = { bold: true, color: { argb: colors.white } };
-    detailTotalRow.getCell(6).numFmt = '0';
-    detailTotalRow.getCell(9).numFmt = moneyFormat;
-    detailTotalRow.eachCell((cell) => {
-      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colors.navy } };
-      cell.font = { bold: true, color: { argb: colors.white } };
-      cell.border = thinBorder;
+
+    componentSummary.forEach((component) => {
+      const row = componentRows.get(component.componentId);
+      const anchor = detailAnchors.get(component.componentId);
+      if (!row || !anchor) return;
+      row.getCell(6).value = {
+        text: formatRupiah(component.price),
+        hyperlink: `#'Detail Komponen'!A${anchor}`,
+        tooltip: `Buka detail AHSP ${component.name}`,
+      };
+      row.getCell(6).font = { color: { argb: colors.blue }, underline: true };
+      row.getCell(6).alignment = { horizontal: 'right' };
     });
 
     const buffer = await workbook.xlsx.writeBuffer();
@@ -562,8 +595,8 @@ export function SummaryStep({ project, floors, onBack, onEditProject, onEditComp
               </button>
               {isExpanded && (
                 <div className="border-t border-slate-100 animate-fade-in">
-                  <div className="overflow-x-auto" tabIndex={0} aria-label={`Tabel rincian ${floor.name}. Geser horizontal pada layar kecil.`}>
-                    <table className="min-w-[760px] w-full text-sm">
+                  <div className="overflow-x-auto" tabIndex={0} aria-label={`Rincian komponen ${floor.name}.`}>
+                    <table className="summary-components-table min-w-[760px] w-full text-sm">
                       <thead>
                         <tr className="bg-slate-50/60 text-left text-xs uppercase tracking-wide text-slate-500">
                           <th className="px-5 py-2.5 font-semibold">Ruangan</th>

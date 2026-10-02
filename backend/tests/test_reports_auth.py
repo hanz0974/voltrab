@@ -38,7 +38,7 @@ def test_delete_rejects_non_admin(mock_execute_query):
     else:
         raise AssertionError("User non-admin seharusnya ditolak")
     mock_execute_query.assert_called_once_with(
-        "SELECT 1 FROM public.admin_users WHERE user_id = %s",
+        "SELECT 1 FROM auth.users WHERE id = %s AND raw_app_meta_data->>'app_role' = 'admin'",
         (ADMIN_ID,),
         fetch="one",
     )
@@ -55,6 +55,6 @@ def test_delete_uses_token_subject_for_admin_lookup(mock_execute_query):
 
     assert response == {"message": "Report dihapus"}
     assert mock_execute_query.call_args_list[0].args == (
-        "SELECT 1 FROM public.admin_users WHERE user_id = %s",
+        "SELECT 1 FROM auth.users WHERE id = %s AND raw_app_meta_data->>'app_role' = 'admin'",
         (ADMIN_ID,),
     )

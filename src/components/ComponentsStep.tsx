@@ -11,7 +11,6 @@ import {
   Edit,
   Image as ImageIcon,
   Loader2,
-  Settings,
   Building2,
 } from "lucide-react";
 import type {
@@ -25,7 +24,6 @@ import { CATEGORY_COLORS, formatRupiah, uid } from "../data";
 import { CategoryBadge } from "./CategoryBadge";
 import { Modal } from "./Modal";
 import { DetectionModal } from "./DetectionModal";
-import { ComponentsManager } from "./ComponentsManager";
 import { supabase } from "../lib/supabase";
 import { getBiayaUmumKoef } from "../lib/biayaUmumSetting";
 
@@ -104,7 +102,6 @@ export function ComponentsStep({
   const [detailViewerRows, setDetailViewerRows] = useState<DetailKomponenView[]>([]);
   const [detailViewerPartName, setDetailViewerPartName] = useState("");
   const [biayaUmumKoef, setBiayaUmumKoef] = useState(0.1);
-  const [catalogManagerOpen, setCatalogManagerOpen] = useState(false);
 
   useEffect(() => {
     if (!activeRoom) {
@@ -441,16 +438,6 @@ export function ComponentsStep({
                   </div>
                 </div>
               </div>
-              <div className="flex min-w-[180px] flex-1">
-                <button
-                  type="button"
-                  onClick={() => setCatalogManagerOpen(true)}
-                  className="inline-flex w-full items-center justify-center gap-2 rounded-2xl border border-brand-200 bg-white px-4 py-3 text-sm font-semibold text-brand-700 transition hover:bg-brand-50"
-                >
-                  <Settings className="h-4 w-4" />
-                  Kelola Komponen Saya
-                </button>
-              </div>
               <div className="flex min-w-[160px] flex-1">
                 <button
                   type="button"
@@ -463,8 +450,8 @@ export function ComponentsStep({
             </div>
           </div>
         </div>
-        <div className="grid gap-6 xl:grid-cols-[minmax(300px,360px)_1fr] py-4">
-          <div className="space-y-4">
+        <div className="grid min-w-0 gap-6 py-4 xl:grid-cols-[minmax(300px,360px)_minmax(0,1fr)]">
+          <div className="min-w-0 space-y-4">
             {floors.length === 0 && (
               <div className="rounded-2xl border-2 border-dashed border-slate-200 bg-white px-5 py-8 text-center">
                 <Building2 className="mx-auto h-10 w-10 text-slate-300" />
@@ -726,10 +713,10 @@ export function ComponentsStep({
             ))}
           </div>
 
-          <div className="space-y-4">
+          <div className="min-w-0 space-y-4">
             {currentRoom ? (
               <>
-                <div className="card-base p-5">
+                <div className="card-base min-w-0 overflow-hidden p-5">
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
                       <h3 className="text-lg font-bold text-slate-900">
@@ -755,7 +742,7 @@ export function ComponentsStep({
                             <ScanLine className="h-3 w-3 text-accent-700" />
                           </div>
                           <h4 className="font-semibold text-accent-700">
-                            Upload SLD
+                            Unggah Denah
                           </h4>
                         </div>
                       </button>
@@ -767,7 +754,7 @@ export function ComponentsStep({
                       <div className="mb-3 flex items-center justify-between gap-2">
                         <div>
                           <div className="text-sm font-semibold text-slate-900">
-                            Hasil Deteksi SLD
+                            Hasil Deteksi Denah
                           </div>
                           <div className="text-xs text-slate-500">
                             Bounding box ditampilkan pada gambar.
@@ -790,7 +777,7 @@ export function ComponentsStep({
                         {detectionImage ? (
                           <img
                             src={detectionImage}
-                            alt="Hasil deteksi SLD"
+                            alt="Hasil deteksi denah"
                             className="block w-full"
                             style={{ height: "auto" }}
                           />
@@ -800,10 +787,10 @@ export function ComponentsStep({
                               <ImageIcon className="h-8 w-8" />
                             </div>
                             <div className="text-center text-sm font-medium text-slate-600">
-                              Belum ada gambar SLD yang diunggah.
+                              Belum ada gambar denah yang diunggah.
                             </div>
                             <div className="text-center text-xs text-slate-500">
-                              Klik tombol Upload SLD untuk menambahkan gambar.
+                              Klik tombol Unggah Denah untuk menambahkan gambar.
                             </div>
                           </div>
                         )}
@@ -826,7 +813,7 @@ export function ComponentsStep({
                       </div>
                     </div>
                   </div>
-                  <div className="card-base overflow-visible my-5">
+                  <div className="card-base my-5 min-w-0 overflow-hidden">
                     <div className="border-b border-slate-100 px-5 py-3">
                       <div className="flex items-center justify-between gap-3">
                         <h4 className="font-semibold text-slate-700">
@@ -850,29 +837,88 @@ export function ComponentsStep({
                         <p className="mt-3 text-sm font-semibold text-slate-700">
                           Belum ada komponen
                         </p>
-                        <p className="mt-1 text-xs text-slate-500">Pilih cara menambahkan komponen ke ruangan ini.</p>
-                        <div className="mt-4 flex flex-col justify-center gap-2 px-4 sm:flex-row">
-                          <button
-                            type="button"
-                            className="btn-primary"
-                            onClick={() => setDetectionOpen(true)}
-                          >
-                            <ScanLine className="h-4 w-4" />
-                            Upload dan Deteksi SLD
-                          </button>
-                          <button
-                            type="button"
-                            className="btn-secondary"
-                            onClick={() => setPickerOpen(true)}
-                          >
-                            <Plus className="h-4 w-4" />
-                            Pilih dari Katalog
-                          </button>
-                        </div>
+                        <p className="mt-1 text-xs text-slate-500">Komponen yang ditambahkan akan tampil di sini.</p>
                       </div>
                     ) : (
-                      <div className="overflow-x-auto">
-                        <table className="w-full text-sm">
+                      <>
+                      <div className="space-y-3 p-3 md:hidden">
+                        {currentRoom.parts.map((part) => (
+                          <article
+                            key={part.id}
+                            className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm"
+                          >
+                            <div className="flex min-w-0 items-start justify-between gap-3">
+                              <div className="min-w-0 flex-1">
+                                <h5 className="break-words text-sm font-semibold leading-5 text-slate-900">
+                                  {part.name}
+                                </h5>
+                                <div className="mt-2">
+                                  <CategoryBadge category={part.category} size="sm" />
+                                </div>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => deletePart(part.id)}
+                                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-rose-50 text-rose-600"
+                                aria-label={`Hapus ${part.name}`}
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </button>
+                            </div>
+
+                            <div className="mt-4 grid grid-cols-2 gap-3">
+                              <label className="min-w-0 text-xs font-medium text-slate-500">
+                                Qty
+                                <input
+                                  type="number"
+                                  min={1}
+                                  value={part.quantity}
+                                  onChange={(e) =>
+                                    updatePart(part.id, {
+                                      quantity: Math.max(1, Number(e.target.value) || 1),
+                                    })
+                                  }
+                                  className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800 outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
+                                />
+                              </label>
+                              <div className="min-w-0 text-xs font-medium text-slate-500">
+                                Satuan
+                                <div className="mt-1 flex min-h-10 items-center rounded-lg bg-slate-50 px-3 text-sm text-slate-700">
+                                  {part.unit}
+                                </div>
+                              </div>
+                            </div>
+
+                            <dl className="mt-3 space-y-2 rounded-lg bg-slate-50 p-3 text-xs">
+                              <div className="flex items-start justify-between gap-3">
+                                <dt className="text-slate-500">Harga</dt>
+                                <dd className="break-all text-right font-medium text-slate-700">{formatRupiah(part.price)}</dd>
+                              </div>
+                              <div className="flex items-start justify-between gap-3 border-t border-slate-200 pt-2">
+                                <dt className="font-semibold text-slate-600">Subtotal</dt>
+                                <dd className="break-all text-right font-bold text-brand-700">
+                                  {formatRupiah(part.quantity * part.price)}
+                                </dd>
+                              </div>
+                            </dl>
+
+                            <button
+                              type="button"
+                              onClick={() => { void openDetailViewer(part); }}
+                              className="mt-3 w-full rounded-lg border border-brand-200 px-3 py-2 text-xs font-semibold text-brand-700"
+                            >
+                              Lihat Detail Komponen
+                            </button>
+                          </article>
+                        ))}
+                        <div className="rounded-xl bg-brand-50 px-4 py-3">
+                          <div className="text-xs font-medium text-slate-600">Total {currentRoom.name}</div>
+                          <div className="mt-1 break-all text-lg font-bold text-brand-700">{formatRupiah(roomTotal)}</div>
+                        </div>
+                      </div>
+
+                      <div className="hidden max-w-full overflow-x-auto overscroll-x-contain md:block">
+                        <table className="min-w-[760px] w-full text-sm">
                           <thead>
                             <tr className="border-b border-slate-100 bg-slate-50/60 text-left text-xs uppercase tracking-wide text-slate-500">
                               <th className="px-5 py-3 font-semibold">
@@ -976,6 +1022,7 @@ export function ComponentsStep({
                           </tfoot>
                         </table>
                       </div>
+                      </>
                     )}
                   </div>
                 </div>
@@ -1020,11 +1067,11 @@ export function ComponentsStep({
         </div>
       </div>
 
-      <div className="flex justify-between">
-        <button type="button" className="btn-secondary" onClick={onBack}>
+      <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-between">
+        <button type="button" className="btn-secondary w-full sm:w-auto" onClick={onBack}>
           Kembali
         </button>
-        <button type="button" className="btn-primary" onClick={onNext}>
+        <button type="button" className="btn-primary w-full sm:w-auto" onClick={onNext}>
           Lanjut ke Ringkasan RAB
         </button>
       </div>
@@ -1062,18 +1109,6 @@ export function ComponentsStep({
       />
 
       <Modal
-        open={catalogManagerOpen}
-        onClose={() => setCatalogManagerOpen(false)}
-        title="Katalog Komponen Saya"
-        subtitle="Tambah, ubah, dan hitung komponen khusus akun Anda."
-        maxWidth="max-w-7xl"
-      >
-        <div className="min-h-[65vh] pr-1">
-          <ComponentsManager />
-        </div>
-      </Modal>
-
-      <Modal
         open={confirmClearOpen}
         onClose={() => setConfirmClearOpen(false)}
         title="Konfirmasi Hapus Semua"
@@ -1108,12 +1143,12 @@ export function ComponentsStep({
         open={confirmDeleteImageOpen}
         onClose={() => setConfirmDeleteImageOpen(false)}
         title="Konfirmasi Hapus Gambar"
-        subtitle="Gambar SLD dan bounding box akan dihapus dari tampilan ini."
+        subtitle="Gambar denah dan bounding box akan dihapus dari tampilan ini."
         maxWidth="max-w-md"
       >
         <div className="space-y-4">
           <p className="text-sm text-slate-600">
-            Apakah Anda yakin ingin menghapus gambar SLD dan hasil deteksi yang
+            Apakah Anda yakin ingin menghapus gambar denah dan hasil deteksi yang
             sudah ditampilkan? Tindakan ini tidak akan memengaruhi komponen yang
             sudah ditambahkan ke daftar.
           </p>
@@ -1235,7 +1270,7 @@ export function ComponentsStep({
               </div>
 
               <div className="max-h-[65vh] overflow-auto rounded-xl border border-slate-200">
-              <table className="w-full text-sm">
+              <table className="component-detail-table w-full text-sm">
                 <thead>
                   <tr className="border-b border-slate-100 bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
                     <th className="px-4 py-3 font-semibold">Uraian</th>
@@ -1248,20 +1283,20 @@ export function ComponentsStep({
                 <tbody className="divide-y divide-slate-50">
                   {groupedDetailViewerRows.map((group) => (
                     <Fragment key={group.jenis}>
-                      <tr key={`heading-${group.jenis}`} className="bg-slate-100/70">
+                      <tr key={`heading-${group.jenis}`} className="component-detail-group-row bg-slate-100/70">
                         <td colSpan={5} className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-700">
                           {group.jenis}
                         </td>
                       </tr>
                       {group.rows.length === 0 ? (
-                        <tr key={`empty-${group.jenis}`}>
+                        <tr key={`empty-${group.jenis}`} className="component-detail-empty-row">
                           <td colSpan={5} className="px-4 py-2 italic text-slate-400">
                             Tidak ada data.
                           </td>
                         </tr>
                       ) : (
                         group.rows.map((row) => (
-                          <tr key={row.id}>
+                          <tr key={row.id} className="component-detail-item-row">
                             <td className="px-4 py-3 text-slate-800">{row.uraian}</td>
                             <td className="px-3 py-3 text-slate-500">{row.satuan}</td>
                             <td className="px-3 py-3 text-right text-slate-600">
@@ -1559,7 +1594,7 @@ function ComponentPicker({
               <p className="mt-1 text-xs text-slate-500">
                 {search.trim()
                   ? "Coba gunakan nama atau kategori yang berbeda."
-                  : "Tambahkan komponen melalui menu Kelola Komponen Saya."}
+                  : "Tambahkan komponen melalui menu Daftar Komponen di sidebar."}
               </p>
               {search.trim() && (
                 <button type="button" className="btn-secondary mt-4" onClick={() => setSearch("")}>

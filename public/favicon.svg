@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="VoltRAB">
+  <defs>
+    <linearGradient id="background" x1="8" y1="6" x2="56" y2="58" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#12a4c5"/>
+      <stop offset="1" stop-color="#078dac"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="16" fill="url(#background)"/>
+  <path d="M35.5 8 17 35h13l-2 21 19-29H34l1.5-19Z" fill="#fff" stroke="#fff" stroke-linejoin="round" stroke-width="3"/>
+</svg>

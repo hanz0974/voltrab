@@ -22,3 +22,12 @@ dist-ssr
 *.sw?
 .env
 .google-oauth.env
+.tools/
+.demo-pids/
+*:Zone.Identifier
+__pycache__/
+*.py[cod]
+.pytest_cache/
+supabase/.temp/
+backend/supabase/.temp/
+backend/uploads/*

@@ -1,5 +1,5 @@
 """
-Router deteksi komponen SLD menggunakan model ONNX (OpenCV).
+Router deteksi simbol pada gambar denah menggunakan model ONNX (OpenCV).
 Menerima upload gambar, menjalankan inferensi, dan mengembalikan hasil deteksi.
 """
 import os
@@ -271,7 +271,7 @@ async def detect_components(
     payload: dict = Depends(verify_supabase_access_token),
 ):
     """
-    Upload gambar SLD dan jalankan deteksi YOLO (OpenCV).
+    Upload gambar denah dan jalankan deteksi YOLO (OpenCV).
     """
     if not payload:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token tidak valid")

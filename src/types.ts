@@ -53,6 +53,7 @@ export interface ProjectState {
 export interface DetectionResult {
   id: string;
   label: string;
+  detectedCategory?: PartCategory;
   confidence: number;
   bbox: { x: number; y: number; width: number; height: number };
   matchedComponentId?: string;

@@ -1,6 +1,6 @@
 # Folder Model ONNX
 
-Letakkan file model ONNX (`.onnx`) Anda di folder ini.
+Model ONNX aktif dikelola melalui menu admin dan disimpan di Supabase Storage.
 
 ## Cara Pakai
 
@@ -12,20 +12,11 @@ Letakkan file model ONNX (`.onnx`) Anda di folder ini.
    ```
    Ini akan menghasilkan file `yolov8n.onnx`.
 
-2. Salin file `.onnx` ke folder ini (`backend/models/`).
+2. Unggah file `.onnx` melalui menu admin. Backend otomatis memuat model aktif
+   dari Supabase saat aplikasi dimulai.
 
-3. (Opsional) Sertakan file class names agar label terbaca dengan benar.
-   Letakkan salah satu file berikut di folder ini:
-   - `<nama_model>.json` — format: `{"names": {"0": "MCB", "1": "MCCB", ...}}`
-   - `<nama_model>.txt` — satu label per baris
-   - `classes.txt` — satu label per baris (berlaku untuk semua model)
-   - `metadata.json` — format: `{"names": {"0": "MCB", "1": "MCCB", ...}}`
-
-   Jika tidak ada file class names, deteksi akan tetap berjalan tetapi label
-   akan tampil sebagai `class_0`, `class_1`, dst.
-
-4. Jalankan backend FastAPI. Model ONNX aktif akan otomatis dimuat dari
-   Supabase saat pertama kali endpoint `/detect` dipanggil.
+3. Nama kelas dibaca dari metadata model ONNX. Jika metadata tidak tersedia,
+   backend menggunakan daftar label fallback di modul deteksi.
 
 ## Catatan
 

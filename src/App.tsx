@@ -1,7 +1,11 @@
-import { useState, useEffect, useCallback } from 'react';
-import { Zap, LogOut, FolderOpen, ChevronDown, Plus, Trash2, Loader2, Settings, CheckCircle, AlertTriangle } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  AlertTriangle, BarChart3, Boxes, CheckCircle, ChevronLeft, FileSpreadsheet,
+  FolderOpen, LayoutDashboard, Loader2, LogOut, Menu, PanelLeftClose,
+  Trash2, UserRound, X, Zap,
+} from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import type { ProjectState, Floor, StepId } from './types';
+import type { Floor, ProjectState, StepId } from './types';
 import { uid } from './data';
 import { Stepper } from './components/Stepper';
 import { ProjectStep } from './components/ProjectStep';
@@ -9,62 +13,63 @@ import { ComponentsStep } from './components/ComponentsStep';
 import { SummaryStep } from './components/SummaryStep';
 import { AuthScreen } from './components/AuthScreen';
 import { AdminDashboard } from './components/AdminDashboard';
+import { ComponentsManager } from './components/ComponentsManager';
+import { LandingPage } from './components/LandingPage';
 import { Modal } from './components/Modal';
+import { ProjectsWorkspace } from './components/ProjectsWorkspace';
+import { UserReportsWorkspace } from './components/UserReportsWorkspace';
+import { WorkspaceDashboard } from './components/WorkspaceDashboard';
 import { useAuth } from './lib/auth';
 import { useProjectStorage, type ProjectData, type SavedProject } from './lib/useProjectStorage';
 
+type WorkspaceView = 'dashboard' | 'projects' | 'editor' | 'components' | 'reports';
 const STEP_ORDER: StepId[] = ['project', 'components', 'summary'];
 
 function createInitialProject(): ProjectState {
-  return {
-    name: '',
-    client: '',
-    location: '',
-    date: new Date().toISOString().slice(0, 10),
-    floors: [],
-  };
+  return { name: '', client: '', location: '', date: new Date().toISOString().slice(0, 10), floors: [] };
 }
 
-function createFloor(idx: number): Floor {
-  return {
-    id: uid(),
-    name: `Lantai ${idx + 1}`,
-    rooms: [],
-  };
+function createFloor(index: number): Floor {
+  return { id: uid(), name: `Lantai ${index + 1}`, rooms: [] };
 }
+
+const VIEW_LABELS: Record<WorkspaceView, string> = {
+  dashboard: 'Dashboard', projects: 'Proyek Saya', editor: 'Perhitungan RAB',
+  components: 'Daftar Komponen', reports: 'Laporan',
+};
 
 export default function App() {
   const { user, loading: authLoading, signOut, isAdmin } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
-  const {
-    savedProjects,
-    currentProjectId,
-    loadingProjects,
-    saveStatus,
-    loadProjects,
-    saveProject,
-    debouncedSave,
-    flushPendingSave,
-    deleteProject,
-    selectProject,
-    saveRabReport,
-    fetchAndRestoreProject,
-  } = useProjectStorage(user?.id);
-
+  const storage = useProjectStorage(user?.id);
+  const { currentProjectId, debouncedSave } = storage;
+  const [authRequested, setAuthRequested] = useState(false);
+  const [view, setView] = useState<WorkspaceView>('dashboard');
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
   const [step, setStep] = useState<StepId>('project');
   const [completed, setCompleted] = useState<Set<StepId>>(new Set());
   const [project, setProject] = useState<ProjectState>(createInitialProject);
   const [floors, setFloors] = useState<Floor[]>([createFloor(0)]);
-  const [showProjectMenu, setShowProjectMenu] = useState(false);
   const [restoring, setRestoring] = useState(false);
   const [pendingDeleteProject, setPendingDeleteProject] = useState<SavedProject | null>(null);
   const [deletingProject, setDeletingProject] = useState(false);
   const [deleteProjectError, setDeleteProjectError] = useState<string | null>(null);
+  const restoredProjectIdRef = useRef<string | null>(null);
   const isAdminRoute = location.pathname === '/admin';
+  const isWorkspaceRoute = location.pathname === '/workspace';
 
-  // Load saved project when selected
+  const userName = useMemo(() => {
+    const metadataName = user?.user_metadata?.full_name || user?.user_metadata?.name;
+    if (typeof metadataName === 'string' && metadataName.trim()) return metadataName.split(' ')[0];
+    return user?.email?.split('@')[0] || 'Estimator';
+  }, [user]);
+  const initials = useMemo(() => userName.slice(0, 2).toUpperCase(), [userName]);
+
   const restoreProject = useCallback((saved: SavedProject) => {
+    restoredProjectIdRef.current = saved.id;
     setRestoring(true);
     const data = saved.project_data;
     setProject(data.project ?? createInitialProject());
@@ -74,485 +79,233 @@ export default function App() {
     setRestoring(false);
   }, []);
 
-  // Auto-load most recent project on first mount after projects are fetched
   useEffect(() => {
-    if (savedProjects.length > 0 && currentProjectId && !restoring) {
-      const found = savedProjects.find((p) => p.id === currentProjectId);
-      if (found && found.project_data?.project) {
-        restoreProject(found);
-      }
+    if (
+      storage.savedProjects.length > 0 &&
+      storage.currentProjectId &&
+      restoredProjectIdRef.current !== storage.currentProjectId &&
+      !restoring
+    ) {
+      const found = storage.savedProjects.find((item) => item.id === storage.currentProjectId);
+      if (found?.project_data?.project) restoreProject(found);
     }
-  }, [savedProjects, currentProjectId, restoring, restoreProject]);
+  }, [storage.savedProjects, storage.currentProjectId, restoring, restoreProject]);
 
   useEffect(() => {
     if (authLoading) return;
-
-    setShowProjectMenu(false);
     setProject(createInitialProject());
     setFloors([createFloor(0)]);
     setCompleted(new Set());
     setStep('project');
-
+    setView('dashboard');
+    setProfileOpen(false);
+    restoredProjectIdRef.current = null;
   }, [user?.id, authLoading]);
 
   useEffect(() => {
     if (authLoading) return;
-    if (location.pathname === '/' || location.pathname === '/admin') return;
-    navigate('/', { replace: true });
-  }, [authLoading, location.pathname, navigate]);
+
+    if (user && location.pathname === '/') {
+      navigate('/workspace', { replace: true });
+      return;
+    }
+
+    if (location.pathname !== '/' && !isWorkspaceRoute && !isAdminRoute) {
+      navigate(user ? '/workspace' : '/', { replace: true });
+    }
+  }, [authLoading, user, location.pathname, isWorkspaceRoute, isAdminRoute, navigate]);
 
   useEffect(() => {
-    if (authLoading || !user) return;
-    if (isAdminRoute && !isAdmin) {
-      navigate('/', { replace: true });
-    }
+    if (!authLoading && user && isAdminRoute && !isAdmin) navigate('/workspace', { replace: true });
   }, [authLoading, user, isAdmin, isAdminRoute, navigate]);
 
-  // Debounced auto-save on state change
   useEffect(() => {
     if (!user || restoring) return;
     if (!currentProjectId && !project.name.trim()) return;
-    const data: ProjectData = {
-      project,
-      floors,
-      step,
-      completed: Array.from(completed),
-    };
-    debouncedSave(data, currentProjectId);
+    debouncedSave({ project, floors, step, completed: Array.from(completed) }, currentProjectId);
   }, [project, floors, step, completed, user, currentProjectId, restoring, debouncedSave]);
 
-  const updateProject = (patch: Partial<ProjectState>) => setProject((p) => ({ ...p, ...patch }));
-
-  const goToStep = (target: StepId) => setStep(target);
-
-  const advance = () => {
-    const idx = STEP_ORDER.indexOf(step);
-    setCompleted((c) => new Set(c).add(step));
-    if (idx < STEP_ORDER.length - 1) setStep(STEP_ORDER[idx + 1]);
-  };
-
-  const goBack = () => {
-    const idx = STEP_ORDER.indexOf(step);
-    if (idx > 0) setStep(STEP_ORDER[idx - 1]);
-  };
-
-  const restart = () => {
+  const restart = useCallback(() => {
     setProject(createInitialProject());
     setFloors([createFloor(0)]);
     setCompleted(new Set());
     setStep('project');
-  };
+  }, []);
 
-  const startNewProject = async () => {
-    await flushPendingSave();
-    restart();
-    const data: ProjectData = {
-      project: createInitialProject(),
-      floors: [createFloor(0)],
-      step: 'project',
-      completed: [],
-    };
-    const newId = await saveProject(data, null);
-    if (newId) {
-      await loadProjects();
-      selectProject(newId);
+  const startNewProject = useCallback(async () => {
+    await storage.flushPendingSave();
+    const initialProject = createInitialProject();
+    const initialFloors = [createFloor(0)];
+    setProject(initialProject);
+    setFloors(initialFloors);
+    setCompleted(new Set());
+    setStep('project');
+    const id = await storage.saveProject({ project: initialProject, floors: initialFloors, step: 'project', completed: [] }, null);
+    if (id) {
+      restoredProjectIdRef.current = id;
+      storage.selectProject(id);
+      await storage.loadProjects();
     }
-    setShowProjectMenu(false);
-  };
+    setView('editor');
+    setSidebarOpen(false);
+  }, [storage]);
 
-  const handleSelectProject = async (proj: SavedProject) => {
-    await flushPendingSave();
-    selectProject(proj.id);
-    const latestData = await fetchAndRestoreProject(proj.id);
-    if (latestData) {
-      restoreProject(latestData);
-    }
-    setShowProjectMenu(false);
-  };
+  const openProject = useCallback(async (saved: SavedProject) => {
+    await storage.flushPendingSave();
+    storage.selectProject(saved.id);
+    const latest = await storage.fetchAndRestoreProject(saved.id);
+    restoreProject(latest ?? saved);
+    setView('editor');
+    setSidebarOpen(false);
+  }, [storage, restoreProject]);
 
-  const requestDeleteProject = (e: React.MouseEvent, savedProject: SavedProject) => {
-    e.stopPropagation();
+  const requestDeleteProject = (event: React.MouseEvent, saved: SavedProject) => {
+    event.stopPropagation();
     setDeleteProjectError(null);
-    setPendingDeleteProject(savedProject);
-    setShowProjectMenu(false);
+    setPendingDeleteProject(saved);
   };
 
   const handleDeleteProject = async () => {
     if (!pendingDeleteProject || deletingProject) return;
     setDeletingProject(true);
     setDeleteProjectError(null);
-    const projectToDelete = pendingDeleteProject;
-    await flushPendingSave();
-    const deleted = await deleteProject(projectToDelete.id);
-
+    await storage.flushPendingSave();
+    const deleted = await storage.deleteProject(pendingDeleteProject.id);
     if (!deleted) {
-      setDeleteProjectError('Project gagal dihapus. Periksa koneksi lalu coba lagi.');
+      setDeleteProjectError('Proyek gagal dihapus. Periksa koneksi lalu coba lagi.');
       setDeletingProject(false);
       return;
     }
-
-    if (currentProjectId === projectToDelete.id) {
-      const remaining = savedProjects.filter((p) => p.id !== projectToDelete.id);
-      if (remaining.length > 0) {
-        await handleSelectProject(remaining[0]);
-      } else {
-        restart();
-      }
-    }
+    if (storage.currentProjectId === pendingDeleteProject.id) restart();
     setDeletingProject(false);
     setPendingDeleteProject(null);
   };
 
+  const advance = () => {
+    const index = STEP_ORDER.indexOf(step);
+    setCompleted((current) => new Set(current).add(step));
+    if (index < STEP_ORDER.length - 1) setStep(STEP_ORDER[index + 1]);
+  };
+
+  const goBack = () => {
+    const index = STEP_ORDER.indexOf(step);
+    if (index > 0) setStep(STEP_ORDER[index - 1]);
+  };
+
+  const handleSaveProject = useCallback(async () => {
+    await storage.flushPendingSave();
+    const projectData: ProjectData = { project, floors, step, completed: Array.from(completed) };
+    const savedProjectId = await storage.saveProject(projectData, storage.currentProjectId);
+    if (!savedProjectId) return { success: false, error: 'Proyek gagal disimpan. Periksa koneksi lalu coba lagi.' };
+    restoredProjectIdRef.current = savedProjectId;
+    storage.selectProject(savedProjectId);
+    await storage.loadProjects();
+    return { success: true, error: null };
+  }, [completed, floors, project, step, storage]);
+
   const handleSaveRab = useCallback(async () => {
-    await flushPendingSave();
-
-    const projectData: ProjectData = {
-      project,
-      floors,
-      step,
-      completed: Array.from(completed),
-    };
-    const savedProjectId = await saveProject(projectData, currentProjectId);
-
-    if (!savedProjectId) {
-      return {
-        success: false,
-        error: 'Project gagal disimpan ke daftar project. Periksa koneksi lalu coba lagi.',
-      };
-    }
-
-    selectProject(savedProjectId);
-    await loadProjects();
-
-    const allParts = floors.flatMap((f) => f.rooms.flatMap((r) => r.parts));
-    const grandTotal = allParts.reduce((s, p) => s + p.price * p.quantity, 0);
-    const totalQty = allParts.reduce((s, p) => s + p.quantity, 0);
-    return saveRabReport({
-      project,
-      floors,
-      grandTotal,
+    const projectSaveResult = await handleSaveProject();
+    if (!projectSaveResult.success) return projectSaveResult;
+    const allParts = floors.flatMap((floor) => floor.rooms.flatMap((room) => room.parts));
+    return storage.saveRabReport({
+      project, floors,
+      grandTotal: allParts.reduce((sum, part) => sum + part.price * part.quantity, 0),
       totalItems: allParts.length,
-      totalQty,
+      totalQty: allParts.reduce((sum, part) => sum + part.quantity, 0),
     });
-  }, [
-    completed,
-    currentProjectId,
-    floors,
-    flushPendingSave,
-    loadProjects,
-    project,
-    saveProject,
-    saveRabReport,
-    selectProject,
-    step,
-  ]);
+  }, [floors, handleSaveProject, project, storage]);
+
+  const switchView = async (nextView: WorkspaceView) => {
+    if (view === 'editor' && nextView !== 'editor') {
+      await storage.flushPendingSave();
+    }
+    if (nextView === 'projects' || nextView === 'dashboard') {
+      await storage.loadProjects();
+    }
+    setView(nextView);
+    setSidebarOpen(false);
+    setProfileOpen(false);
+    window.scrollTo(0, 0);
+  };
+
+  const handleSignOut = async () => {
+    await signOut();
+    setAuthRequested(false);
+    navigate('/', { replace: true });
+  };
 
   if (authLoading) {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-slate-50">
-        <Loader2 className="h-8 w-8 animate-spin text-brand-600" />
-      </div>
-    );
+    return <div className="app-loading-screen"><span className="brand-mark big"><Zap /></span><Loader2 className="spin" /><p>Menyiapkan workspace...</p></div>;
   }
 
   if (!user) {
-    return <AuthScreen />;
+    if (!authRequested && !isWorkspaceRoute) return <LandingPage onStart={() => setAuthRequested(true)} onLogin={() => setAuthRequested(true)} />;
+    return <div className="auth-shell-v2"><button className="auth-back" type="button" onClick={() => { setAuthRequested(false); navigate('/'); }}><ChevronLeft /> Kembali ke landing page</button><AuthScreen onAuthenticated={() => navigate('/workspace', { replace: true })} /></div>;
   }
 
   if (isAdminRoute) {
-    if (!isAdmin) {
-      return (
-        <div className="flex min-h-screen items-center justify-center bg-slate-50">
-          <Loader2 className="h-8 w-8 animate-spin text-brand-600" />
-        </div>
-      );
-    }
-
-    return (
-      <AdminDashboard
-        user={user}
-        isAdmin={isAdmin}
-        onSignOut={() => {
-          void signOut();
-          navigate('/', { replace: true });
-        }}
-        onBackToApp={() => navigate('/')}
-      />
-    );
+    if (!isAdmin) return <div className="app-loading-screen"><Loader2 className="spin" /></div>;
+    return <AdminDashboard user={user} isAdmin={isAdmin} onSignOut={() => void handleSignOut()} onBackToApp={() => navigate('/workspace')} />;
   }
 
   return (
-    <div className="min-h-screen bg-slate-50">
-      {/* Header */}
-      <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/90 backdrop-blur-lg print:hidden">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3 sm:px-6">
-          <div className="flex items-center gap-2.5">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-brand-500 to-brand-700 text-white shadow-glow">
-              <Zap className="h-5 w-5" fill="currentColor" />
-            </div>
-            <div>
-              <h1 className="text-base font-bold leading-tight text-slate-900">VoltRAB</h1>
-              <p className="text-xs text-slate-500">RAB Kelistrikan & Deteksi SLD</p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2 sm:gap-3">
-            <div
-              className={`flex min-w-4 items-center gap-1.5 text-xs ${
-                saveStatus === 'error' ? 'text-rose-600' : 'text-slate-500'
-              }`}
-              role="status"
-              aria-live="polite"
-            >
-              {saveStatus === 'saving' && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-              {saveStatus === 'saved' && <CheckCircle className="h-3.5 w-3.5 text-emerald-600" />}
-              {saveStatus === 'error' && <AlertTriangle className="h-3.5 w-3.5" />}
-              <span className="hidden sm:inline">
-                {saveStatus === 'saving' && 'Menyimpan...'}
-                {saveStatus === 'saved' && 'Tersimpan'}
-                {saveStatus === 'error' && 'Gagal menyimpan'}
-              </span>
-            </div>
-            <div className="relative">
-              <button
-                onClick={() => setShowProjectMenu(!showProjectMenu)}
-                className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50"
-              >
-                <FolderOpen className="h-4 w-4 text-brand-600" />
-                <span className="hidden max-w-[120px] truncate sm:inline">
-                  {project.name || 'Project Tanpa Nama'}
-                </span>
-                <ChevronDown className="h-3.5 w-3.5 text-slate-400" />
-              </button>
-              {showProjectMenu && (
-                <>
-                  <div className="fixed inset-0 z-40" onClick={() => setShowProjectMenu(false)} />
-                  <div className="absolute right-0 top-full z-50 mt-1 w-72 animate-scale-in rounded-xl border border-slate-200 bg-white shadow-card">
-                    <div className="border-b border-slate-100 px-3 py-2">
-                      <button
-                        onClick={startNewProject}
-                        className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-brand-600 transition-colors hover:bg-brand-50"
-                      >
-                        <Plus className="h-4 w-4" />
-                        Project Baru
-                      </button>
-                    </div>
-                    <div className="max-h-64 overflow-y-auto py-1">
-                      {loadingProjects && (
-                        <div className="flex items-center justify-center py-4">
-                          <Loader2 className="h-5 w-5 animate-spin text-slate-400" />
-                        </div>
-                      )}
-                      {!loadingProjects && savedProjects.length === 0 && (
-                        <div className="px-3 py-4 text-center text-sm text-slate-400">
-                          Belum ada project tersimpan
-                        </div>
-                      )}
-                      {savedProjects.map((proj) => (
-                        <div
-                          key={proj.id}
-                          onClick={() => handleSelectProject(proj)}
-                          className={`group flex cursor-pointer items-center justify-between gap-2 px-3 py-2 transition-colors hover:bg-slate-50 ${
-                            proj.id === currentProjectId ? 'bg-brand-50' : ''
-                          }`}
-                        >
-                          <div className="min-w-0 flex-1">
-                            <div className="truncate text-sm font-medium text-slate-700">
-                              {proj.name}
-                            </div>
-                            <div className="text-xs text-slate-400">
-                              {new Date(proj.updated_at).toLocaleDateString('id-ID', {
-                                day: 'numeric',
-                                month: 'short',
-                                hour: '2-digit',
-                                minute: '2-digit',
-                              })}
-                            </div>
-                          </div>
-                          <button
-                            onClick={(e) => requestDeleteProject(e, proj)}
-                            className="rounded p-1.5 text-slate-400 opacity-100 transition-all hover:bg-rose-50 hover:text-rose-500 sm:opacity-0 sm:group-hover:opacity-100 sm:focus:opacity-100"
-                            aria-label={`Hapus project ${proj.name}`}
-                            title={`Hapus ${proj.name}`}
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </>
-              )}
-            </div>
-
-            <div className="flex items-center gap-2">
-              {isAdmin && (
-                <button
-                  onClick={() => navigate('/admin')}
-                  className="flex h-9 w-9 items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-brand-50 hover:text-brand-600"
-                  aria-label="Admin Dashboard"
-                  title="Admin Dashboard"
-                >
-                  <Settings className="h-4 w-4" />
-                </button>
-              )}
-              <div className="hidden text-right sm:block">
-                <div className="text-xs font-medium text-slate-700">{user.email}</div>
-                <div className="flex items-center gap-1.5 text-xs text-slate-400">
-                  {isAdmin && (
-                    <span className="inline-flex items-center gap-1 rounded bg-brand-100 px-1.5 py-0.5 text-[10px] font-medium text-brand-700">
-                      Admin
-                    </span>
-                  )}
-                  <span>Akun Aktif</span>
-                </div>
-              </div>
-              <button
-                onClick={() => {
-                  void signOut();
-                  navigate('/', { replace: true });
-                }}
-                className="flex h-9 w-9 items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-rose-50 hover:text-rose-600"
-                aria-label="Keluar"
-                title="Keluar"
-              >
-                <LogOut className="h-4 w-4" />
-              </button>
-            </div>
-          </div>
+    <div id="app" className={`view app-view active ${sidebarCollapsed ? 'sidebar-is-collapsed' : ''}`}>
+      {sidebarOpen && <button className="mobile-sidebar-backdrop" type="button" aria-label="Tutup sidebar" onClick={() => setSidebarOpen(false)} />}
+      <aside className={`sidebar ${sidebarOpen ? 'mobile-open' : ''} ${sidebarCollapsed ? 'collapsed' : ''}`}>
+        <div className="sidebar-brand-row">
+          <button className="brand inverse" type="button" onClick={() => switchView('dashboard')}><span className="brand-mark"><Zap /></span><span className="sidebar-brand-copy">VoltRAB</span></button>
+          <button className="mobile-sidebar-close" type="button" onClick={() => setSidebarOpen(false)} aria-label="Tutup sidebar"><X /></button>
         </div>
-      </header>
+        <div className="workspace-label">WORKSPACE</div>
+        <nav>
+          <button className={`side-link ${view === 'dashboard' ? 'active' : ''}`} type="button" onClick={() => switchView('dashboard')}><span><LayoutDashboard /></span><em>Dashboard</em></button>
+          <button className={`side-link ${view === 'projects' || view === 'editor' ? 'active' : ''}`} type="button" onClick={() => switchView('projects')}><span><FolderOpen /></span><em>Proyek Saya</em><b>{storage.savedProjects.length}</b></button>
+          <button className={`side-link ${view === 'components' ? 'active' : ''}`} type="button" onClick={() => switchView('components')}><span><Boxes /></span><em>Daftar Komponen</em></button>
+          <div className="workspace-label">LAINNYA</div>
+          <button className={`side-link ${view === 'reports' ? 'active' : ''}`} type="button" onClick={() => switchView('reports')}><span><FileSpreadsheet /></span><em>Laporan</em></button>
+        </nav>
+        <button className="collapse" type="button" onClick={() => setSidebarCollapsed((current) => !current)}><PanelLeftClose /><span>{sidebarCollapsed ? 'Buka sidebar' : 'Tutup sidebar'}</span></button>
+      </aside>
 
-      {/* Hero (only on first step) */}
-      {step === 'project' && (
-        <section className="relative overflow-hidden border-b border-slate-200 bg-gradient-to-br from-brand-900 via-brand-800 to-slate-900 print:hidden">
-          <div className="absolute inset-0 bg-grid opacity-20" />
-          <div className="absolute -right-20 -top-20 h-72 w-72 rounded-full bg-brand-500/20 blur-3xl" />
-          <div className="absolute -bottom-32 left-1/3 h-72 w-72 rounded-full bg-accent-500/10 blur-3xl" />
-          <div className="relative mx-auto max-w-6xl px-4 py-12 sm:px-6 sm:py-16">
-            <div className="max-w-2xl">
-              <div className="mb-3 inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-1 text-xs font-medium text-brand-100 ring-1 ring-white/20">
-                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent-400" />
-                Sistem Perhitungan RAB Otomatis
-              </div>
-              <h2 className="text-3xl font-bold leading-tight text-white sm:text-4xl">
-                Hitung RAB Kelistrikan,
-                <span className="block bg-gradient-to-r from-brand-200 to-accent-200 bg-clip-text text-transparent">
-                  deteksi komponen dari SLD.
-                </span>
-              </h2>
-              <p className="mt-4 text-base text-brand-100">
-                Buat Rencana Anggaran Biaya kelistrikan profesional. Isi manual dari katalog, atau unggah diagram
-                SLD dan biarkan sistem mendeteksi komponen secara otomatis.
-              </p>
-              <div className="mt-6 flex flex-wrap gap-6 text-sm text-brand-100">
-                <div className="flex items-center gap-2">
-                  <span className="text-lg font-bold text-white">3</span> Langkah
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-lg font-bold text-white">20+</span> Komponen Katalog
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-lg font-bold text-white">AI</span> Deteksi Otomatis
-                </div>
-              </div>
+      <div className="app-main">
+        <header className="app-nav">
+          <div><button className="mobile-side" type="button" onClick={() => setSidebarOpen(true)}><Menu /></button><div className="breadcrumbs">Workspace <span>/</span> {VIEW_LABELS[view]}{view === 'editor' && project.name && <><span>/</span> {project.name}</>}</div></div>
+          <div className="app-nav-actions">
+            <div className={`save-indicator ${storage.saveStatus}`} role="status" aria-live="polite">
+              {storage.saveStatus === 'saving' && <Loader2 className="spin" />}
+              {storage.saveStatus === 'saved' && <CheckCircle />}
+              {storage.saveStatus === 'error' && <AlertTriangle />}
+              <span>{storage.saveStatus === 'saving' ? 'Menyimpan...' : storage.saveStatus === 'saved' ? 'Tersimpan' : storage.saveStatus === 'error' ? 'Gagal menyimpan' : ''}</span>
+            </div>
+            <div className="profile-wrap">
+              <button className="profile" type="button" onClick={() => setProfileOpen((current) => !current)}><span>{initials}</span><div><b>{userName}</b><small>{isAdmin ? 'Administrator' : 'Estimator'}</small></div><span>⌄</span></button>
+              {profileOpen && <div className="profile-menu"><div><UserRound /><span><b>{userName}</b><small>{user.email}</small></span></div>{isAdmin && <button type="button" onClick={() => navigate('/admin')}><BarChart3 /> Panel Admin</button>}<button type="button" onClick={() => void handleSignOut()}><LogOut /> Keluar</button></div>}
             </div>
           </div>
-        </section>
-      )}
+        </header>
 
-      {/* Stepper */}
-      <div className="sticky top-[57px] z-20 border-b border-slate-200 bg-white/90 backdrop-blur-lg print:hidden">
-        <div className="mx-auto max-w-6xl px-4 py-4 sm:px-6">
-          <Stepper current={step} completed={completed} onStepClick={goToStep} />
-        </div>
+        {view === 'dashboard' && <WorkspaceDashboard projects={storage.savedProjects} userName={userName} onNewProject={() => void startNewProject()} onOpenProjects={() => switchView('projects')} onOpenProject={(saved) => void openProject(saved)} onOpenComponents={() => switchView('components')} />}
+        {view === 'projects' && <ProjectsWorkspace projects={storage.savedProjects} loading={storage.loadingProjects} onNew={() => void startNewProject()} onOpen={(saved) => void openProject(saved)} onDelete={requestDeleteProject} />}
+        {view === 'editor' && (
+          <main className="project-editor-page workspace-content-page">
+            <div className="editor-heading"><div><span className="workspace-kicker">PERHITUNGAN RAB</span><h1>{project.name || 'Proyek Baru'}</h1><p>Lengkapi tiga tahap berikut. Perubahan tersimpan otomatis ke akun Anda.</p></div><button className="dashboard-outline" type="button" onClick={() => switchView('projects')}><FolderOpen /> Semua Proyek</button></div>
+            <section className="editor-stepper"><Stepper current={step} completed={completed} onStepClick={setStep} /></section>
+            <section className="editor-surface">
+              {step === 'project' && <ProjectStep project={project} onChange={(patch) => setProject((current) => ({ ...current, ...patch }))} onNext={advance} />}
+              {step === 'components' && <ComponentsStep projectName={project.name} floors={floors} onChange={setFloors} onNext={advance} onBack={goBack} />}
+              {step === 'summary' && <SummaryStep project={project} floors={floors} onBack={goBack} onEditProject={() => setStep('project')} onEditComponents={() => setStep('components')} onRestart={() => void startNewProject()} onSaveProject={handleSaveProject} onSaveRab={handleSaveRab} />}
+            </section>
+          </main>
+        )}
+        {view === 'components' && <main className="components-workspace workspace-content-page"><div className="workspace-page-heading"><span className="workspace-kicker">KATALOG REFERENSI</span><h1>Daftar Komponen</h1><p>Kelola komponen pekerjaan dan detail analisis harga satuan yang digunakan dalam proyek.</p></div><section className="manager-surface"><ComponentsManager /></section></main>}
+        {view === 'reports' && <UserReportsWorkspace userId={user.id} />}
       </div>
 
-      {/* Main content */}
-      <main className="mx-auto max-w-6xl px-4 py-8 sm:px-6 sm:py-10">
-        {step === 'project' && (
-          <ProjectStep
-            project={project}
-            onChange={updateProject}
-            onNext={advance}
-          />
-        )}
-        {step === 'components' && (
-          <ComponentsStep
-            projectName={project.name}
-            floors={floors}
-            onChange={setFloors}
-            onNext={advance}
-            onBack={goBack}
-          />
-        )}
-        {step === 'summary' && (
-          <SummaryStep
-            project={project}
-            floors={floors}
-            onBack={goBack}
-            onEditProject={() => goToStep('project')}
-            onEditComponents={() => goToStep('components')}
-            onRestart={restart}
-            onSaveRab={handleSaveRab}
-          />
-        )}
-      </main>
-
-      {/* Footer */}
-      <footer className="border-t border-slate-200 bg-white py-6 print:hidden">
-        <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-2 px-4 text-sm text-slate-500 sm:flex-row sm:px-6">
-          <div className="flex items-center gap-2">
-            <Zap className="h-4 w-4 text-brand-600" fill="currentColor" />
-            <span className="font-medium text-slate-600">VoltRAB</span>
-            <span>— Perhitungan RAB Kelistrikan</span>
-          </div>
-        </div>
-      </footer>
-
-      <Modal
-        open={pendingDeleteProject !== null}
-        onClose={() => {
-          if (!deletingProject) {
-            setPendingDeleteProject(null);
-            setDeleteProjectError(null);
-          }
-        }}
-        title="Hapus project?"
-        subtitle="Tindakan ini tidak dapat dibatalkan."
-      >
-        <p className="text-sm leading-6 text-slate-600">
-          Project <span className="font-semibold text-slate-900">{pendingDeleteProject?.name}</span> beserta seluruh data di dalamnya akan dihapus permanen.
-        </p>
-        {deleteProjectError && (
-          <div className="mt-4 rounded-xl bg-rose-50 px-4 py-3 text-sm text-rose-700" role="alert">
-            {deleteProjectError}
-          </div>
-        )}
-        <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-          <button
-            type="button"
-            className="btn-secondary"
-            disabled={deletingProject}
-            onClick={() => {
-              setPendingDeleteProject(null);
-              setDeleteProjectError(null);
-            }}
-          >
-            Batal
-          </button>
-          <button
-            type="button"
-            disabled={deletingProject}
-            onClick={() => void handleDeleteProject()}
-            className="inline-flex items-center justify-center gap-2 rounded-xl bg-rose-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {deletingProject && <Loader2 className="h-4 w-4 animate-spin" />}
-            {deletingProject ? 'Menghapus...' : 'Hapus permanen'}
-          </button>
-        </div>
+      <Modal open={pendingDeleteProject !== null} onClose={() => { if (!deletingProject) { setPendingDeleteProject(null); setDeleteProjectError(null); } }} title="Hapus proyek?" subtitle="Tindakan ini tidak dapat dibatalkan.">
+        <p className="text-sm leading-6 text-slate-600">Proyek <span className="font-semibold text-slate-900">{pendingDeleteProject?.name}</span> beserta seluruh susunan pekerjaannya akan dihapus permanen.</p>
+        {deleteProjectError && <div className="mt-4 rounded-xl bg-rose-50 px-4 py-3 text-sm text-rose-700" role="alert">{deleteProjectError}</div>}
+        <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end"><button type="button" className="btn-secondary" disabled={deletingProject} onClick={() => setPendingDeleteProject(null)}>Batal</button><button type="button" disabled={deletingProject} onClick={() => void handleDeleteProject()} className="inline-flex items-center justify-center gap-2 rounded-xl bg-rose-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-rose-700 disabled:opacity-60">{deletingProject ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}{deletingProject ? 'Menghapus...' : 'Hapus permanen'}</button></div>
       </Modal>
-
     </div>
   );
 }

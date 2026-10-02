@@ -4,7 +4,21 @@
  * Autentikasi & penyimpanan project menggunakan Supabase langsung dari frontend.
  */
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+// Same-origin by default so a single Cloudflare Tunnel can expose both the
+// frontend and the FastAPI backend through Vite's /api proxy.
+const API_URL = import.meta.env.VITE_API_URL || '/api';
+
+/** Error dari backend yang membawa kode status HTTP, agar pemanggil dapat
+ * membedakan kesalahan input pengguna (4xx) dari kegagalan server (5xx). */
+export class ApiError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+  }
+}
 
 export interface ApiDetectionItem {
   label: string;
@@ -38,7 +52,7 @@ export async function apiDetectImage(file: File, token: string): Promise<ApiDete
     } catch {
       // not JSON
     }
-    throw new Error(message);
+    throw new ApiError(message, res.status);
   }
 
   return res.json() as Promise<ApiDetectionResponse>;

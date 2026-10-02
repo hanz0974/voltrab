@@ -1,6 +1,7 @@
 import { useRef, useState, type ChangeEvent } from 'react';
 import { createPortal } from 'react-dom';
-import { AlertCircle, CheckCircle2, FileSpreadsheet, Loader2, Upload, X } from 'lucide-react';
+import * as ExcelJS from 'exceljs';
+import { AlertCircle, CheckCircle2, Download, FileSpreadsheet, Loader2, Upload, X } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { getBiayaUmumKoef } from '../lib/biayaUmumSetting';
 import type { PartCategory } from '../types';
@@ -154,9 +155,173 @@ const parseWorkbook = async (file: File): Promise<ImportedComponent[]> => {
       category: inferCategory(component.name),
     }));
   if (valid.length === 0) {
-    throw new Error('Tidak ada blok komponen AHSP yang dapat dibaca dari file ini.');
+    throw new Error('Tidak ada blok komponen AHSP yang dapat dibaca dari file ini. Gunakan tombol Unduh Template untuk melihat format yang didukung.');
   }
   return valid;
+};
+
+const TEMPLATE_FILENAME = 'Template_Import_Komponen_VoltRAB.xlsx';
+
+interface TemplateBlock {
+  code: string;
+  name: string;
+  sections: Array<{ key: 'A' | 'B' | 'C'; label: string; rows: Array<[string, string, number, number]> }>;
+}
+
+// Contoh memakai kode 99.x agar tidak menimpa komponen hasil impor sebelumnya
+// apabila template langsung diimpor tanpa diubah.
+const TEMPLATE_BLOCKS: TemplateBlock[] = [
+  {
+    code: '99.1',
+    name: 'Pemasangan 1 titik Instalasi Lampu (Contoh)',
+    sections: [
+      {
+        key: 'A',
+        label: 'Tenaga kerja',
+        rows: [
+          ['Pekerja', 'OH', 0.19, 100000],
+          ['Tukang Listrik', 'OH', 0.318, 145000],
+          ['Kepala tukang', 'OH', 0.032, 175000],
+          ['Mandor', 'OH', 0.011, 200000],
+        ],
+      },
+      {
+        key: 'B',
+        label: 'Bahan',
+        rows: [
+          ['Kabel NYM 3 x 2,5 mm²', 'm', 8.8, 21300],
+          ['Conduit HI 20 mm', 'm', 8.8, 4000],
+          ['T Dus', 'buah', 1, 4000],
+          ['Klem 20 mm', 'buah', 10, 900],
+        ],
+      },
+      { key: 'C', label: 'Peralatan', rows: [] },
+    ],
+  },
+  {
+    code: '99.2',
+    name: 'Pemasangan 1 buah Saklar Tunggal (Contoh)',
+    sections: [
+      {
+        key: 'A',
+        label: 'Tenaga kerja',
+        rows: [
+          ['Pekerja', 'OH', 0.1, 100000],
+          ['Tukang Listrik', 'OH', 0.1, 145000],
+        ],
+      },
+      {
+        key: 'B',
+        label: 'Bahan',
+        rows: [
+          ['Saklar tunggal', 'buah', 1, 25000],
+          ['Inbow dus', 'buah', 1, 3000],
+        ],
+      },
+      { key: 'C', label: 'Peralatan', rows: [] },
+    ],
+  },
+];
+
+const TEMPLATE_GUIDE: string[] = [
+  'Sistem hanya membaca sheet pertama ("Template AHSP"). Jangan memindahkan atau menghapus sheet tersebut.',
+  'Setiap komponen ditulis sebagai satu blok. Baris judul blok berisi kode bertitik pada kolom A (contoh: 1.1 atau 2.3.1) dan nama pekerjaan pada kolom B.',
+  'Paling jauh 3 baris di bawah baris judul harus ada baris header dengan kolom A berisi "No" dan kolom B berisi "Uraian".',
+  'Baris kelompok rincian hanya berisi huruf A (Tenaga kerja), B (Bahan), atau C (Peralatan) pada kolom A, tanpa titik.',
+  'Baris rincian berisi nomor urut berupa angka pada kolom A, uraian pada kolom B, satuan pada kolom C, koefisien pada kolom D, dan harga satuan pada kolom E. Tulis angka saja tanpa "Rp".',
+  'Kolom F (Jumlah Harga) serta baris JUMLAH HARGA, D, E, dan F hanya bantuan perhitungan dan tidak dibaca sistem. Baris-baris tersebut boleh dihapus.',
+  'Satuan komponen dibaca dari nama pekerjaan, misalnya "Pemasangan 1 titik ..." menjadi titik dan "1 buah" menjadi buah. Jika tidak ditemukan, satuan dianggap unit.',
+  'Kategori ditentukan otomatis dari nama pekerjaan: saklar atau stop kontak menjadi Saklar & Stop Kontak, lampu atau LED menjadi Penerangan, MCB menjadi Pengaman, kabel atau konduit menjadi Kabel, dan selain itu Lainnya.',
+  'Harga satuan komponen dihitung sistem dari jumlah (koefisien x harga satuan) seluruh rincian, ditambah biaya umum dan keuntungan sesuai pengaturan aplikasi, bukan persentase yang tertulis di template.',
+  'Komponen dengan kode yang sama dengan hasil impor sebelumnya akan diperbarui, dan seluruh rinciannya diganti dengan isi file baru. Blok tanpa rincian tidak diimpor.',
+  'Dua blok contoh memakai kode 99.1 dan 99.2. Ganti atau hapus contoh tersebut sebelum mengimpor data Anda sendiri.',
+];
+
+const buildTemplateWorkbook = async (): Promise<Blob> => {
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = 'VoltRAB';
+  const thin: Partial<ExcelJS.Border> = { style: 'thin' };
+  const box: Partial<ExcelJS.Borders> = { top: thin, left: thin, bottom: thin, right: thin };
+  const font = (bold = false): Partial<ExcelJS.Font> => ({ name: 'Arial', size: 11, bold });
+  const formula = (text: string) => ({ formula: text }) as unknown as ExcelJS.CellValue;
+  const SECTION_TITLE = { A: 'TENAGA KERJA', B: 'BAHAN', C: 'PERALATAN' } as const;
+  const SECTION_TOTAL = { A: 'JUMLAH HARGA TENAGA KERJA', B: 'JUMLAH HARGA BAHAN', C: 'JUMLAH HARGA ALAT' } as const;
+
+  // Sistem hanya membaca sheet pertama, jadi template AHSP harus berada di urutan pertama.
+  const sheet = workbook.addWorksheet('Template AHSP');
+  sheet.columns = [{ width: 10 }, { width: 47 }, { width: 8 }, { width: 11 }, { width: 18 }, { width: 19 }];
+
+  // Baris tabel bergaya AHSP standar: Arial 11, garis tipis, tanpa warna latar.
+  const tableRow = (values: ExcelJS.CellValue[], bold = false) => {
+    const row = sheet.addRow(values);
+    for (let col = 1; col <= 6; col += 1) {
+      row.getCell(col).font = font(bold);
+      row.getCell(col).border = box;
+    }
+    return row;
+  };
+
+  for (const block of TEMPLATE_BLOCKS) {
+    const title = sheet.addRow([block.code, block.name]);
+    title.getCell(1).font = font(true);
+    title.getCell(2).font = font(true);
+    title.getCell(1).alignment = { horizontal: 'left' };
+
+    const header = tableRow(['No', 'Uraian', 'Sat.', 'Koefisien', 'Harga Satuan (Rp)', 'Jumlah Harga (Rp)']);
+    header.alignment = { horizontal: 'center', vertical: 'middle' };
+
+    const subtotalCells: string[] = [];
+    let number = 1;
+    for (const section of block.sections) {
+      const sectionRow = tableRow([section.key, SECTION_TITLE[section.key]]);
+      sectionRow.getCell(1).alignment = { horizontal: 'center' };
+
+      const firstDetail = sheet.rowCount + 1;
+      for (const [uraian, satuan, koefisien, hargaSatuan] of section.rows) {
+        const row = tableRow([number, uraian, satuan, koefisien, hargaSatuan, null]);
+        row.getCell(6).value = formula(`D${row.number}*E${row.number}`);
+        row.getCell(1).alignment = { horizontal: 'center' };
+        row.getCell(3).alignment = { horizontal: 'center' };
+        row.getCell(4).numFmt = '0.000';
+        row.getCell(5).numFmt = '#,##0.00';
+        row.getCell(6).numFmt = '#,##0.00';
+        number += 1;
+      }
+      const lastDetail = sheet.rowCount;
+
+      const total = tableRow([SECTION_TOTAL[section.key], null, null, null, null, null]);
+      for (let col = 1; col <= 5; col += 1) total.getCell(col).alignment = { horizontal: 'centerContinuous' };
+      total.getCell(6).value = lastDetail >= firstDetail ? formula(`SUM(F${firstDetail}:F${lastDetail})`) : 0;
+      total.getCell(6).numFmt = '#,##0.00';
+      subtotalCells.push(`F${total.number}`);
+    }
+
+    const jumlah = tableRow(['D', 'Jumlah (A+B+C)', null, null, null, formula(subtotalCells.join('+'))]);
+    const biaya = tableRow(['E', 'Biaya Umum dan Keuntungan', null, null, 0.1, null]);
+    biaya.getCell(5).numFmt = '0%';
+    biaya.getCell(6).value = formula(`F${jumlah.number}*E${biaya.number}`);
+    const hargaSatuanPekerjaan = tableRow(['F', 'Harga Satuan Pekerjaan (D+E)', null, null, null, formula(`F${jumlah.number}+F${biaya.number}`)], true);
+    for (const row of [jumlah, biaya, hargaSatuanPekerjaan]) {
+      row.getCell(1).alignment = { horizontal: 'center' };
+      row.getCell(6).numFmt = '#,##0.00';
+    }
+    sheet.addRow([]);
+  }
+
+  const guide = workbook.addWorksheet('Petunjuk');
+  guide.columns = [{ width: 5 }, { width: 100 }];
+  guide.addRow(['', 'Petunjuk Pengisian Template Import Komponen VoltRAB']).getCell(2).font = font(true);
+  guide.addRow([]);
+  TEMPLATE_GUIDE.forEach((text, index) => {
+    const row = guide.addRow([index + 1, text]);
+    row.getCell(1).font = font();
+    row.getCell(2).font = font();
+    row.getCell(1).alignment = { vertical: 'top', horizontal: 'center' };
+    row.getCell(2).alignment = { vertical: 'top', wrapText: true };
+  });
+
+  const buffer = await workbook.xlsx.writeBuffer();
+  return new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
 };
 
 const chunk = <T,>(items: T[], size: number): T[][] => {
@@ -173,6 +338,27 @@ export function ComponentExcelImport({ onImported }: ComponentExcelImportProps) 
   const [importing, setImporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [downloading, setDownloading] = useState(false);
+
+  const handleDownloadTemplate = async () => {
+    setDownloading(true);
+    try {
+      const blob = await buildTemplateWorkbook();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = TEMPLATE_FILENAME;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (templateError) {
+      setFileName(TEMPLATE_FILENAME);
+      setError(templateError instanceof Error ? templateError.message : 'Gagal membuat template Excel.');
+    } finally {
+      setDownloading(false);
+    }
+  };
 
   const close = () => {
     if (importing) return;
@@ -278,6 +464,16 @@ export function ComponentExcelImport({ onImported }: ComponentExcelImportProps) 
   return (
     <>
       <input ref={inputRef} type="file" accept=".xlsx,.xls" onChange={handleFile} className="hidden" />
+      <button
+        type="button"
+        onClick={() => void handleDownloadTemplate()}
+        disabled={downloading}
+        title="Unduh contoh format Excel yang dapat dibaca sistem"
+        className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition-colors hover:bg-slate-50 disabled:opacity-50"
+      >
+        {downloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+        Unduh Template
+      </button>
       <button
         type="button"
         onClick={() => inputRef.current?.click()}

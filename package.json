@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.app.json"
   },
   "dependencies": {
+    "@marsidev/react-turnstile": "^1.6.1",
     "@supabase/supabase-js": "^2.57.4",
     "exceljs": "^4.4.0",
     "lucide-react": "^0.344.0",

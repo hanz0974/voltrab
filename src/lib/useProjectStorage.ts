@@ -197,7 +197,7 @@ export function useProjectStorage(userId: string | undefined) {
       pendingSave.current = null;
       saveTimer.current = null;
       if (pending) await saveProject(pending.data, pending.projectId);
-    }, 1000);
+    }, 400);
   }, [saveProject]);
 
   const flushPendingSave = useCallback(async () => {
@@ -209,6 +209,22 @@ export function useProjectStorage(userId: string | undefined) {
     pendingSave.current = null;
     if (pending) await saveProject(pending.data, pending.projectId);
   }, [saveProject]);
+
+  useEffect(() => {
+    const flushWhenLeaving = () => {
+      void flushPendingSave();
+    };
+    const flushWhenHidden = () => {
+      if (document.visibilityState === 'hidden') flushWhenLeaving();
+    };
+
+    window.addEventListener('pagehide', flushWhenLeaving);
+    document.addEventListener('visibilitychange', flushWhenHidden);
+    return () => {
+      window.removeEventListener('pagehide', flushWhenLeaving);
+      document.removeEventListener('visibilitychange', flushWhenHidden);
+    };
+  }, [flushPendingSave]);
 
   const deleteProject = useCallback(async (projectId: string): Promise<boolean> => {
     const { error } = await supabase

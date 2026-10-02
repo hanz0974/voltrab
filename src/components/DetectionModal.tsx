@@ -11,13 +11,15 @@ import {
   MessageSquareWarning,
   Ruler,
   Calculator,
+  ChevronDown,
   Plus,
+  Search,
   Undo2,
   Trash2,
 } from "lucide-react";
-import type { DetectionResult, PartItem, ComponentSpec } from "../types";
+import type { DetectionResult, PartItem, ComponentSpec, PartCategory } from "../types";
 import { formatRupiah, uid } from "../data";
-import { apiDetectImage } from "../lib/api";
+import { apiDetectImage, ApiError } from "../lib/api";
 import { Modal } from "./Modal";
 import { supabase } from "../lib/supabase"; // SESUAIKAN PATH INI
 
@@ -39,15 +41,26 @@ interface TrainingAnnotation {
   bbox: { x: number; y: number; width: number; height: number };
 }
 
-const LABEL_TO_COMPONENT: Record<string, string> = {
-  MCB: "c-mcb-16",
-  MCCB: "c-mccb-100",
-  RCCB: "c-rccb-40",
-  "Kabel NYM": "c-kabel-nym-3x2.5",
-  "Lampu LED": "c-led-18",
-  "Stop Kontak": "c-stop-1",
-  Saklar: "c-saklar-1",
-  "Panel Box": "c-panel-box",
+const MODEL_CLASS_TO_CATEGORY: Record<string, PartCategory> = {
+  "rmdl pl-c 13w": "Penerangan",
+  "exit lamp": "Penerangan",
+  "reflector and louvre m5": "Penerangan",
+  "stage lamp gms light 1xtl5 14w": "Penerangan",
+  fitting: "Penerangan",
+  "local switch 1 way 1 gang": "Saklar & Stop Kontak",
+  "local switch 2 way 1 gang": "Saklar & Stop Kontak",
+};
+
+const inferDetectedCategory = (label: string): PartCategory => {
+  const normalized = label.trim().toLowerCase();
+  const exactCategory = MODEL_CLASS_TO_CATEGORY[normalized];
+  if (exactCategory) return exactCategory;
+  if (/mcb|mccb|rccb|breaker|pengaman/.test(normalized)) return "Pengaman";
+  if (/lamp|light|reflector|louvre|fitting/.test(normalized)) return "Penerangan";
+  if (/switch|saklar|stop kontak|socket/.test(normalized)) return "Saklar & Stop Kontak";
+  if (/cable|kabel|wire/.test(normalized)) return "Kabel";
+  if (/panel|mdp|sdp/.test(normalized)) return "Panel & MDP";
+  return "Lainnya";
 };
 
 export function DetectionModal({
@@ -66,6 +79,8 @@ export function DetectionModal({
   >("upload");
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [detections, setDetections] = useState<DetectionResult[]>([]);
+  const [detectionSearches, setDetectionSearches] = useState<Record<string, string>>({});
+  const [activeDetectionSearchId, setActiveDetectionSearchId] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
   const [processingStep, setProcessingStep] = useState("");
   const [errorMsg, setErrorMsg] = useState("");
@@ -109,6 +124,8 @@ export function DetectionModal({
   const cableComponents = catalogComponents.filter(
     (component) => component.category.toLowerCase() === "kabel",
   );
+  const selectedDetectionCount = detections.filter((detection) => detection.matchedComponentId).length;
+  const allDetectionsSelected = detections.length > 0 && selectedDetectionCount === detections.length;
   const reportReady = reportComplaint.trim().length >= 5 && trainingAnnotations.length > 0;
 
   const toggleManualSelected = (id: string) => {
@@ -129,6 +146,8 @@ export function DetectionModal({
       setStage("upload");
       setImagePreview(null);
       setDetections([]);
+      setDetectionSearches({});
+      setActiveDetectionSearchId(null);
       setProgress(0);
       setErrorMsg("");
       setManualSearch("");
@@ -309,7 +328,7 @@ export function DetectionModal({
     const cablePart: PartItem = {
       id: uid(),
       componentId: cableComp.id,
-      name: `${cableComp.name} (Hasil Kalkulasi Kalibrasi SLD)`,
+      name: `${cableComp.name} (Hasil Kalkulasi Kalibrasi Denah)`,
       category: cableComp.category,
       unit: cableComp.unit || "Meter",
       quantity: calculatedCableLength,
@@ -457,11 +476,13 @@ export function DetectionModal({
       const results: DetectionResult[] = result.detections.map((d) => ({
         id: uid(),
         label: d.label,
+        detectedCategory: inferDetectedCategory(d.label),
         confidence: d.confidence,
         bbox: d.bbox,
-        matchedComponentId:
-          d.matched_component_id ?? LABEL_TO_COMPONENT[d.label],
+        matchedComponentId: undefined,
       }));
+      setDetectionSearches({});
+      setActiveDetectionSearchId(null);
 
       if (results.length === 0) {
         setDetections([]);
@@ -482,8 +503,6 @@ export function DetectionModal({
         return;
       }
 
-      setDetections(results);
-
       const finalImage = result.image_url || previewImage || imagePreview || "";
       if (finalImage) {
         setImagePreview(finalImage);
@@ -502,6 +521,14 @@ export function DetectionModal({
       setErrorMsg(message);
       setDetections([]);
       setStage("error");
+      // Error 4xx berasal dari input atau sesi pengguna (mis. berkas bukan gambar),
+      // bukan kegagalan deteksi, sehingga tidak dilaporkan ke admin.
+      const isClientError =
+        error instanceof ApiError && error.status >= 400 && error.status < 500;
+      if (isClientError) {
+        setAutoReportSent(false);
+        return;
+      }
       await sendAutoErrorReport({
         errorType: "detection_runtime_error",
         userMessage: message,
@@ -512,7 +539,28 @@ export function DetectionModal({
     }
   };
 
+  const ALLOWED_IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp"];
+  const ALLOWED_IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp"];
+  const UNSUPPORTED_FILE_MESSAGE =
+    "Format berkas tidak didukung. Unggah gambar berformat PNG, JPG, JPEG, atau WEBP.";
+
+  const isSupportedImageFile = (file: File) => {
+    const name = file.name.toLowerCase();
+    const extensionOk = ALLOWED_IMAGE_EXTENSIONS.some((ext) => name.endsWith(ext));
+    const typeOk = !file.type || ALLOWED_IMAGE_TYPES.includes(file.type);
+    return extensionOk && typeOk;
+  };
+
   const handleFile = (file: File) => {
+    // Tolak berkas non-gambar sebelum dibaca dan dikirim ke server. Ini kesalahan
+    // input pengguna, bukan kegagalan model, jadi tidak dicatat sebagai laporan.
+    if (!isSupportedImageFile(file)) {
+      setAutoReportSent(false);
+      setDetections([]);
+      setErrorMsg(UNSUPPORTED_FILE_MESSAGE);
+      setStage("error");
+      return;
+    }
     const reader = new FileReader();
     reader.onload = (e) => {
       const preview = e.target?.result as string;
@@ -608,6 +656,12 @@ export function DetectionModal({
 
   const removeDetection = (id: string) => {
     setDetections((prev) => prev.filter((d) => d.id !== id));
+    setDetectionSearches((current) => {
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+    setActiveDetectionSearchId((current) => current === id ? null : current);
   };
 
   const buildDetectedParts = (): PartItem[] => {
@@ -665,11 +719,11 @@ export function DetectionModal({
     onConfirm(parts);
   };
 
-  const modalTitle = stage === "manual" ? "Input Manual Komponen" : "Deteksi Komponen SLD";
+  const modalTitle = stage === "manual" ? "Input Manual Komponen" : "Deteksi Simbol pada Denah";
   const modalSubtitle =
     stage === "manual"
       ? "Pilih komponen dari katalog secara manual untuk ditambahkan ke RAB."
-      : "Unggah diagram SLD, deteksi otomatis dengan YOLOv8 via FastAPI.";
+      : "Unggah gambar denah, deteksi otomatis dengan YOLOv8 via FastAPI.";
 
   return (
     <Modal
@@ -682,7 +736,7 @@ export function DetectionModal({
       <input
         ref={fileRef}
         type="file"
-        accept="image/*"
+        accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp"
         className="hidden"
         onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])}
       />
@@ -717,10 +771,10 @@ export function DetectionModal({
             <Upload className="h-7 w-7" />
           </div>
           <h4 className="mt-4 text-base font-semibold text-slate-800">
-            Unggah Diagram SLD
+            Unggah Gambar Denah
           </h4>
           <p className="mt-1 text-sm text-slate-500">
-            Drag & drop gambar SLD ke sini, atau klik tombol di bawah. Gambar
+            Drag & drop gambar denah ke sini, atau klik tombol di bawah. Gambar
             dikirim ke server FastAPI untuk diproses.
           </p>
           <div className="mt-5 flex flex-wrap items-center justify-center gap-3">
@@ -754,7 +808,7 @@ export function DetectionModal({
               </div>
             </div>
             <h4 className="mt-6 text-base font-semibold text-slate-800">
-              Memproses Diagram SLD
+              Memproses Gambar Denah
             </h4>
             <p className="mt-1 text-sm text-slate-500">{processingStep}</p>
             <div className="mt-5 h-2 w-full overflow-hidden rounded-full bg-slate-200">
@@ -974,7 +1028,7 @@ export function DetectionModal({
                 {imagePreview && imagePreview !== "sample" ? (
                   <img
                     src={imagePreview}
-                    alt="SLD"
+                    alt="Denah"
                     className="block w-full pointer-events-none"
                     style={{ height: 'auto' }}
                   />
@@ -1028,7 +1082,7 @@ export function DetectionModal({
             </div>
 
             {/* Detection list */}
-            <div>
+            <div className="md:flex md:h-0 md:min-h-full md:flex-col md:overflow-hidden">
               <div className="mb-2 flex items-center justify-between">
                 <h4 className="text-sm font-semibold text-slate-700">
                   Komponen Terdeteksi ({detections.length})
@@ -1041,11 +1095,24 @@ export function DetectionModal({
                   Deteksi Ulang
                 </button>
               </div>
-              <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
+              <div className="max-h-72 space-y-2 overflow-y-auto pr-1 md:min-h-0 md:max-h-none md:flex-1">
                 {detections.map((d, idx) => {
+                  const detectedCategory = d.detectedCategory ?? inferDetectedCategory(d.label);
+                  const searchKeyword = detectionSearches[d.id] ?? "";
                   const comp = catalogComponents.find(
                     (c) => c.id === d.matchedComponentId,
                   );
+                  const categoryComponents = catalogComponents.filter(
+                    (component) => component.category === detectedCategory,
+                  );
+                  const normalizedSearch = searchKeyword.trim().toLowerCase();
+                  const filteredComponents = normalizedSearch
+                    ? catalogComponents.filter((component) =>
+                        `${component.name} ${component.category} ${component.unit}`
+                          .toLowerCase()
+                          .includes(normalizedSearch),
+                      )
+                    : categoryComponents;
                   return (
                     <div
                       key={d.id}
@@ -1057,11 +1124,11 @@ export function DetectionModal({
                             {idx + 1}
                           </span>
                           <div>
-                            <div className="text-sm font-medium text-slate-800">
-                              {d.label}
+                            <div className="text-sm font-semibold text-slate-800">
+                              {detectedCategory}
                             </div>
                             <div className="text-xs text-slate-500">
-                              Conf: {(d.confidence * 100).toFixed(0)}%
+                              Class model: {d.label} · Conf: {(d.confidence * 100).toFixed(0)}%
                             </div>
                           </div>
                         </div>
@@ -1072,32 +1139,76 @@ export function DetectionModal({
                           <X className="h-3.5 w-3.5" />
                         </button>
                       </div>
-                      {comp ? (
-                        <div className="mt-2 flex items-center justify-between rounded-lg bg-emerald-50 px-2.5 py-1.5">
-                          <span className="text-xs text-emerald-700">
-                            Cocok: {comp.name}
-                          </span>
-                          <span className="text-xs font-semibold text-emerald-700">
-                            {formatRupiah(comp.price)}
-                          </span>
+                      <div className="mt-2 block text-xs font-medium text-slate-600">
+                        <span>Pilih komponen</span>
+                        <div className="relative mt-1.5">
+                          <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-2.5 focus-within:border-brand-500 focus-within:ring-2 focus-within:ring-brand-500/10">
+                            <Search className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+                            <input
+                              type="search"
+                              className="min-h-9 w-full border-0 bg-transparent py-1.5 text-xs text-slate-800 outline-none placeholder:text-slate-400"
+                              value={searchKeyword}
+                              onFocus={() => setActiveDetectionSearchId(d.id)}
+                              onBlur={() => {
+                                window.setTimeout(() => {
+                                  setActiveDetectionSearchId((current) => current === d.id ? null : current);
+                                }, 120);
+                              }}
+                              onChange={(event) => {
+                                setDetectionSearches((current) => ({
+                                  ...current,
+                                  [d.id]: event.target.value,
+                                }));
+                                if (d.matchedComponentId) {
+                                  updateDetection(d.id, { matchedComponentId: undefined });
+                                }
+                                setActiveDetectionSearchId(d.id);
+                              }}
+                              onKeyDown={(event) => {
+                                if (event.key === "Escape") setActiveDetectionSearchId(null);
+                              }}
+                              placeholder={`Pilih atau cari ${detectedCategory.toLowerCase()}...`}
+                              autoComplete="off"
+                            />
+                            <ChevronDown className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+                          </div>
+                          {activeDetectionSearchId === d.id && (
+                            <div className="mt-1 max-h-52 overflow-y-auto rounded-xl border border-slate-200 bg-white p-1.5 shadow-lg">
+                              {filteredComponents.length > 0 ? filteredComponents.map((component) => (
+                                <button
+                                  key={component.id}
+                                  type="button"
+                                  className="flex w-full items-center justify-between gap-3 rounded-lg px-2.5 py-2 text-left hover:bg-brand-50"
+                                  onMouseDown={(event) => event.preventDefault()}
+                                  onClick={() => {
+                                    updateDetection(d.id, { matchedComponentId: component.id });
+                                    setDetectionSearches((current) => ({ ...current, [d.id]: component.name }));
+                                    setActiveDetectionSearchId(null);
+                                  }}
+                                >
+                                  <span className="min-w-0">
+                                    <strong className="block truncate text-xs text-slate-800">{component.name}</strong>
+                                    <small className="block truncate text-[10px] text-slate-500">{component.category} · {component.unit}</small>
+                                  </span>
+                                  <span className="shrink-0 text-[10px] font-semibold text-brand-700">{formatRupiah(component.price)}</span>
+                                </button>
+                              )) : (
+                                <div className="px-3 py-4 text-center text-xs text-slate-500">Komponen tidak ditemukan.</div>
+                              )}
+                            </div>
+                          )}
                         </div>
-                      ) : (
-                        <select
-                          className="mt-2 w-full rounded-lg border border-slate-200 px-2 py-1.5 text-xs outline-none focus:border-brand-500"
-                          value={d.matchedComponentId ?? ""}
-                          onChange={(e) =>
-                            updateDetection(d.id, {
-                              matchedComponentId: e.target.value,
-                            })
-                          }
-                        >
-                          <option value="">Pilih komponen...</option>
-                          {catalogComponents.map((c) => (
-                            <option key={c.id} value={c.id}>
-                              {c.name} — {formatRupiah(c.price)}
-                            </option>
-                          ))}
-                        </select>
+                      </div>
+                      {comp && (
+                        <div className="mt-2 flex items-center justify-between rounded-lg bg-emerald-50 px-2.5 py-1.5">
+                          <span className="text-xs text-emerald-700">Dipilih: {comp.name}</span>
+                          <span className="text-xs font-semibold text-emerald-700">{formatRupiah(comp.price)}</span>
+                        </div>
+                      )}
+                      {categoryComponents.length === 0 && (
+                        <div className="mt-2 rounded-lg bg-amber-50 px-2.5 py-2 text-xs text-amber-700">
+                          Belum ada komponen kategori {detectedCategory} di katalog akun.
+                        </div>
                       )}
                     </div>
                   );
@@ -1491,7 +1602,9 @@ export function DetectionModal({
               <CheckCircle2 className="h-4 w-4" />
               {detectionValid === "no"
                 ? "Jika deteksi tidak sesuai, kirim report lalu gunakan input manual atau deteksi ulang."
-                : `${detections.filter((d) => d.matchedComponentId).length} komponen siap ditambahkan ke RAB.`}
+                : allDetectionsSelected
+                  ? `${selectedDetectionCount} komponen siap ditambahkan ke RAB.`
+                  : `Pilih tipe komponen untuk setiap hasil deteksi (${selectedDetectionCount}/${detections.length}).`}
             </div>
             <div className="flex gap-2">
               <button className="btn-ghost" onClick={() => setStage("upload")}>
@@ -1505,7 +1618,7 @@ export function DetectionModal({
                 <button
                   className="btn-primary"
                   onClick={handleConfirm}
-                  disabled={detectionValid !== "yes"}
+                  disabled={detectionValid !== "yes" || !allDetectionsSelected}
                 >
                   <CheckCircle2 className="h-4 w-4" />
                   Konfirmasi & Tambah

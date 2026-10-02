@@ -1,44 +1,170 @@
-import { useState, type FormEvent } from 'react';
-import { Zap, Mail, Lock, Loader2, AlertCircle, ArrowRight, UserPlus, LogIn, Eye, EyeOff } from 'lucide-react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { Zap, Mail, Lock, Loader2, AlertCircle, ArrowRight, UserPlus, LogIn, Eye, EyeOff, CheckCircle2, ShieldCheck } from 'lucide-react';
+import { Turnstile, type TurnstileInstance } from '@marsidev/react-turnstile';
 import { useAuth } from '../lib/auth';
 
-export function AuthScreen() {
-  const { signIn, signUp, signInWithGoogle } = useAuth();
-  const [mode, setMode] = useState<'login' | 'register'>('login');
+const TURNSTILE_SITE_KEY = import.meta.env.VITE_TURNSTILE_SITE_KEY as string | undefined;
+
+interface AuthScreenProps {
+  onAuthenticated?: () => void;
+}
+
+const RESEND_SECONDS = 60;
+
+const AUTH_ERROR_MESSAGES: Array<[string, string]> = [
+  ['invalid login credentials', 'Email atau password salah. Kalau Anda belum punya akun, daftar dulu lewat tab Daftar.'],
+  ['email not confirmed', 'Email ini belum dikonfirmasi. Daftar ulang untuk menerima kode konfirmasi baru.'],
+  ['user already registered', 'Email ini sudah terdaftar. Silakan masuk lewat tab Masuk.'],
+  ['token has expired or is invalid', 'Kode konfirmasi salah atau sudah kedaluwarsa. Minta kode baru lalu coba lagi.'],
+  ['for security purposes', 'Permintaan terlalu cepat. Tunggu sebentar sebelum meminta kode lagi.'],
+  ['email rate limit exceeded', 'Terlalu banyak email dikirim ke alamat ini. Coba lagi beberapa menit lagi.'],
+  ['password should be at least', 'Password minimal 6 karakter.'],
+  ['unable to validate email address', 'Format email tidak valid.'],
+  ['failed to fetch', 'Tidak dapat terhubung ke server. Periksa koneksi internet Anda.'],
+  ['captcha', 'Verifikasi keamanan gagal. Coba centang ulang lalu ulangi.'],
+];
+
+function translateAuthError(message: string): string {
+  const lower = message.toLowerCase();
+  const match = AUTH_ERROR_MESSAGES.find(([key]) => lower.includes(key));
+  return match ? match[1] : message;
+}
+
+export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
+  const { signIn, isEmailRegistered, sendSignUpCode, verifySignUpCode, sendPasswordResetCode, resetPasswordWithCode, signInWithGoogle } = useAuth();
+  const [mode, setMode] = useState<'login' | 'register' | 'forgot'>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [code, setCode] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
+  const [sendingCode, setSendingCode] = useState(false);
+  const [codeSent, setCodeSent] = useState(false);
+  const [resendIn, setResendIn] = useState(0);
+  const [captchaToken, setCaptchaToken] = useState('');
+  const turnstileRef = useRef<TurnstileInstance | null>(null);
+
+  // Token Turnstile sekali pakai: harus di-reset setelah tiap percobaan.
+  const resetCaptcha = () => {
+    turnstileRef.current?.reset();
+    setCaptchaToken('');
+  };
+
+  useEffect(() => {
+    if (resendIn <= 0) return;
+    const timer = window.setTimeout(() => setResendIn((current) => current - 1), 1000);
+    return () => window.clearTimeout(timer);
+  }, [resendIn]);
+
+  const handleSendCode = async () => {
+    const target = email.trim();
+    if (!target) {
+      setError('Masukkan email terlebih dahulu.');
+      return;
+    }
+
+    if (TURNSTILE_SITE_KEY && !captchaToken) {
+      setError('Selesaikan verifikasi keamanan di bawah terlebih dahulu.');
+      return;
+    }
+
+    setError(null);
+    setNotice(null);
+    setSendingCode(true);
+    const { error: sendError } = mode === 'forgot'
+      ? await sendPasswordResetCode(target, captchaToken || undefined)
+      : await sendSignUpCode(target, captchaToken || undefined);
+    setSendingCode(false);
+    resetCaptcha();
+
+    if (sendError) {
+      setError(translateAuthError(sendError));
+      return;
+    }
+
+    setCodeSent(true);
+    setResendIn(RESEND_SECONDS);
+    setNotice(
+      mode === 'forgot'
+        ? `Jika ${target} terdaftar, kode reset password telah dikirim ke email tersebut. Periksa juga folder spam.`
+        : `Kode konfirmasi telah dikirim ke ${target}. Periksa juga folder spam.`,
+    );
+  };
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setError(null);
+
+    if (mode !== 'login') {
+      if (password !== confirmPassword) {
+        setError('Konfirmasi password tidak cocok.');
+        return;
+      }
+      if (!codeSent) {
+        setError('Kirim kode konfirmasi ke email Anda terlebih dahulu.');
+        return;
+      }
+    }
+
+    if (mode === 'login' && TURNSTILE_SITE_KEY && !captchaToken) {
+      setError('Selesaikan verifikasi keamanan di bawah terlebih dahulu.');
+      return;
+    }
+
     setLoading(true);
 
     const result = mode === 'login'
-      ? await signIn(email.trim(), password)
-      : await signUp(email.trim(), password);
+      ? await signIn(email.trim(), password, captchaToken || undefined)
+      : mode === 'forgot'
+        ? await resetPasswordWithCode(email.trim(), code.trim(), password)
+        : await verifySignUpCode(email.trim(), code.trim(), password);
+
+    if (mode === 'login') resetCaptcha();
+
+    if (!result.error) {
+      setLoading(false);
+      onAuthenticated?.();
+      return;
+    }
+
+    let message = translateAuthError(result.error);
+    if (mode === 'login' && result.error.toLowerCase().includes('invalid login credentials')) {
+      const registered = await isEmailRegistered(email.trim());
+      if (registered === false) {
+        message = 'Akun dengan email ini belum terdaftar. Silakan daftar dulu lewat tab Daftar.';
+      } else if (registered === true) {
+        message = 'Password salah. Periksa kembali password Anda.';
+      }
+    }
 
     setLoading(false);
-
-    if (result.error) {
-      setError(result.error);
-    }
+    setError(message);
   };
 
-  const switchMode = () => {
-    setMode(mode === 'login' ? 'register' : 'login');
+  const resetFormState = (next: 'login' | 'register' | 'forgot') => {
+    setMode(next);
     setError(null);
+    setNotice(null);
+    setPassword('');
+    setConfirmPassword('');
+    setCode('');
+    setCodeSent(false);
+    setResendIn(0);
+    resetCaptcha();
   };
+
+  const switchMode = () => resetFormState(mode === 'login' ? 'register' : 'login');
 
   const handleGoogle = async () => {
     setError(null);
     setGoogleLoading(true);
     const { error } = await signInWithGoogle();
     if (error) {
-      setError(error);
+      setError(translateAuthError(error));
       setGoogleLoading(false);
     }
   };
@@ -58,27 +184,30 @@ export function AuthScreen() {
             <Zap className="h-8 w-8" fill="currentColor" />
           </div>
           <h1 className="text-2xl font-bold text-white">VoltRAB</h1>
-          <p className="mt-1 text-sm text-brand-200">RAB Kelistrikan & Deteksi SLD</p>
+          <p className="mt-1 text-sm text-brand-200">RAB Kelistrikan & Deteksi Denah</p>
         </div>
 
         {/* Auth Card */}
         <div className="rounded-2xl border border-white/10 bg-white/95 p-6 shadow-2xl backdrop-blur-xl sm:p-8">
           <div className="mb-6">
             <h2 className="text-xl font-bold text-slate-900">
-              {mode === 'login' ? 'Masuk ke Akun' : 'Daftar Akun Baru'}
+              {mode === 'login' ? 'Masuk ke Akun' : mode === 'forgot' ? 'Atur Ulang Password' : 'Daftar Akun Baru'}
             </h2>
             <p className="mt-1 text-sm text-slate-500">
               {mode === 'login'
                 ? 'Masuk untuk melanjutkan progres RAB Anda'
-                : 'Buat akun untuk menyimpan progres RAB Anda'}
+                : mode === 'forgot'
+                  ? 'Masukkan email akun Anda, lalu buat password baru dengan kode yang dikirim ke email'
+                  : 'Buat akun untuk menyimpan progres RAB Anda'}
             </p>
           </div>
 
           {/* Mode toggle */}
+          {mode !== 'forgot' && (
           <div className="mb-6 flex gap-1 rounded-xl bg-slate-100 p-1">
             <button
               type="button"
-              onClick={() => { setMode('login'); setError(null); }}
+              onClick={() => resetFormState('login')}
               className={`flex flex-1 items-center justify-center gap-1.5 rounded-lg px-4 py-2 text-sm font-medium transition-all duration-200 ${
                 mode === 'login'
                   ? 'bg-white text-brand-700 shadow-sm'
@@ -90,7 +219,7 @@ export function AuthScreen() {
             </button>
             <button
               type="button"
-              onClick={() => { setMode('register'); setError(null); }}
+              onClick={() => resetFormState('register')}
               className={`flex flex-1 items-center justify-center gap-1.5 rounded-lg px-4 py-2 text-sm font-medium transition-all duration-200 ${
                 mode === 'register'
                   ? 'bg-white text-brand-700 shadow-sm'
@@ -101,6 +230,7 @@ export function AuthScreen() {
               Daftar
             </button>
           </div>
+          )}
 
           {/* Form */}
           <form onSubmit={handleSubmit} className="space-y-4">
@@ -115,15 +245,36 @@ export function AuthScreen() {
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   placeholder="nama@email.com"
-                  className="input-base pl-10"
+                  className={mode !== 'login' ? 'input-base pl-10 pr-32' : 'input-base pl-10'}
                   autoComplete="email"
                   disabled={loading}
                 />
+                {mode !== 'login' && (
+                  <button
+                    type="button"
+                    onClick={() => void handleSendCode()}
+                    disabled={sendingCode || loading || resendIn > 0 || !email.trim()}
+                    className="absolute right-1.5 top-1/2 flex -translate-y-1/2 items-center gap-1.5 rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+                  >
+                    {sendingCode ? (
+                      <>
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        Mengirim
+                      </>
+                    ) : resendIn > 0 ? (
+                      `Kirim ulang ${resendIn}s`
+                    ) : codeSent ? (
+                      'Kirim ulang'
+                    ) : (
+                      'Kirim kode'
+                    )}
+                  </button>
+                )}
               </div>
             </div>
 
             <div>
-              <label className="label-base" htmlFor="password">Password</label>
+              <label className="label-base" htmlFor="password">{mode === 'forgot' ? 'Password Baru' : 'Password'}</label>
               <div className="relative">
                 <Lock className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                 <input
@@ -147,7 +298,85 @@ export function AuthScreen() {
                   {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                 </button>
               </div>
+              {mode === 'login' && (
+                <div className="mt-1.5 text-right">
+                  <button
+                    type="button"
+                    onClick={() => resetFormState('forgot')}
+                    className="text-xs font-semibold text-brand-600 transition-colors hover:text-brand-700"
+                  >
+                    Lupa password?
+                  </button>
+                </div>
+              )}
             </div>
+
+            {mode !== 'login' && (
+              <>
+                <div>
+                  <label className="label-base" htmlFor="confirmPassword">Konfirmasi Password</label>
+                  <div className="relative">
+                    <Lock className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                    <input
+                      id="confirmPassword"
+                      type={showPassword ? 'text' : 'password'}
+                      required
+                      minLength={6}
+                      value={confirmPassword}
+                      onChange={(e) => setConfirmPassword(e.target.value)}
+                      placeholder="Ulangi password"
+                      className="input-base pl-10"
+                      autoComplete="new-password"
+                      disabled={loading}
+                    />
+                  </div>
+                  {confirmPassword && password !== confirmPassword && (
+                    <p className="mt-1.5 text-xs font-medium text-rose-600">Password belum cocok</p>
+                  )}
+                </div>
+
+                <div>
+                  <label className="label-base" htmlFor="code">Kode Konfirmasi</label>
+                  <div className="relative">
+                    <ShieldCheck className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                    <input
+                      id="code"
+                      type="text"
+                      required
+                      inputMode="numeric"
+                      maxLength={6}
+                      value={code}
+                      onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
+                      placeholder="6 digit kode"
+                      className="input-base pl-10 tracking-[0.3em]"
+                      autoComplete="one-time-code"
+                      disabled={loading}
+                    />
+                  </div>
+                  <p className="mt-1.5 text-xs text-slate-500">
+                    Masukkan kode yang dikirim ke email Anda lewat tombol &ldquo;Kirim kode&rdquo;.
+                  </p>
+                </div>
+              </>
+            )}
+
+            {TURNSTILE_SITE_KEY && (
+              <Turnstile
+                ref={turnstileRef}
+                siteKey={TURNSTILE_SITE_KEY}
+                onSuccess={setCaptchaToken}
+                onExpire={() => setCaptchaToken('')}
+                onError={() => setCaptchaToken('')}
+                options={{ theme: 'light', size: 'flexible' }}
+              />
+            )}
+
+            {notice && (
+              <div className="flex items-start gap-2 rounded-xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700 animate-fade-in">
+                <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
+                <span>{notice}</span>
+              </div>
+            )}
 
             {error && (
               <div className="flex items-start gap-2 rounded-xl bg-rose-50 px-4 py-3 text-sm text-rose-700 animate-fade-in">
@@ -168,13 +397,15 @@ export function AuthScreen() {
                 </>
               ) : (
                 <>
-                  {mode === 'login' ? 'Masuk' : 'Daftar Sekarang'}
+                  {mode === 'login' ? 'Masuk' : mode === 'forgot' ? 'Simpan Password Baru' : 'Daftar Sekarang'}
                   <ArrowRight className="h-4 w-4" />
                 </>
               )}
             </button>
           </form>
 
+          {mode !== 'forgot' && (
+          <>
           {/* Divider */}
           <div className="mt-5 flex items-center gap-3">
             <div className="h-px flex-1 bg-slate-200" />
@@ -201,10 +432,12 @@ export function AuthScreen() {
             )}
             <span>{googleLoading ? 'Menghubungkan...' : 'Masuk dengan Google'}</span>
           </button>
+          </>
+          )}
 
           {/* Switch mode link */}
           <p className="mt-6 text-center text-sm text-slate-500">
-            {mode === 'login' ? 'Belum punya akun? ' : 'Sudah punya akun? '}
+            {mode === 'login' ? 'Belum punya akun? ' : mode === 'forgot' ? 'Ingat password Anda? ' : 'Sudah punya akun? '}
             <button
               type="button"
               onClick={switchMode}

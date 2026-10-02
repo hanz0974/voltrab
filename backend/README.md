@@ -5,7 +5,7 @@ Backend API untuk aplikasi VoltRAB (RAB Kelistrikan & Deteksi SLD).
 ## Fitur
 
 - **Autentikasi**: Access token dari Supabase Auth
-- **Penyimpanan Project**: Simpan/muat/hapus progres RAB per pengguna
+- **Penyimpanan Project**: Dikelola langsung oleh frontend melalui Supabase
 - **Deteksi Gambar**: Upload gambar SLD, deteksi komponen dengan YOLOv8
 
 ## Struktur
@@ -21,7 +21,6 @@ backend/
 │   ├── models/
 │   │   └── schemas.py       # Pydantic models
 │   └── routers/
-│       ├── projects.py      # /projects (CRUD)
 │       ├── detection.py     # /detect (YOLOv8)
 │       └── reports.py       # /reports (administrasi laporan)
 ├── uploads/                 # Folder upload gambar (sementara)
@@ -74,15 +73,6 @@ Buka browser: `http://localhost:8000/docs` (Swagger UI)
 
 ## API Endpoints
 
-### Projects
-
-| Method | Endpoint            | Deskripsi                    |
-|--------|---------------------|------------------------------|
-| GET    | `/projects`         | List semua project user      |
-| POST   | `/projects`         | Buat project baru            |
-| PUT    | `/projects/{id}`    | Update project               |
-| DELETE | `/projects/{id}`    | Hapus project                |
-
 ### Detection
 
 | Method | Endpoint    | Deskripsi                              |
@@ -98,5 +88,6 @@ belum dimasukkan.
 
 ## Database
 
-Identitas pengguna berasal dari Supabase Auth (`auth.users`). Hak admin disimpan
-di `public.admin_users`; progres RAB disimpan di `public.user_projects`.
+Identitas autentikasi berasal dari Supabase Auth (`auth.users`). Profil aplikasi dan
+hak akses disimpan di `public.users` melalui kolom `role`; progres RAB disimpan di
+`public.user_projects`.

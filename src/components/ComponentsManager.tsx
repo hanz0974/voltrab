@@ -581,8 +581,67 @@ export function ComponentsManager() {
                 <span className="text-sm text-slate-500">{items.length} komponen</span>
               </div>
 
-              <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
-                <table className="w-full table-fixed divide-y divide-slate-200">
+              <div className="space-y-3 md:hidden">
+                {items.map((component) => (
+                  <article
+                    key={component.id}
+                    className="min-w-0 rounded-xl border border-slate-200 bg-white p-4 shadow-sm"
+                  >
+                    <div className="flex min-w-0 items-start justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <h3 className="break-words text-sm font-semibold leading-5 text-slate-900">
+                          {component.name}
+                        </h3>
+                        <code
+                          className="mt-1 block truncate text-xs text-slate-500"
+                          title={component.id}
+                        >
+                          {component.id}
+                        </code>
+                      </div>
+                      <span className="shrink-0 rounded-lg bg-slate-100 px-2.5 py-1.5 text-xs font-semibold text-slate-600">
+                        {component.unit}
+                      </span>
+                    </div>
+
+                    <div className="mt-4 rounded-lg bg-slate-50 px-3 py-2.5">
+                      <div className="text-xs text-slate-500">Harga satuan</div>
+                      <div className="mt-1 break-all text-base font-bold text-slate-900">
+                        {formatRupiah(component.price)}
+                      </div>
+                    </div>
+
+                    <div className="mt-3 grid grid-cols-[minmax(0,1fr)_44px_44px] gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void openDetailModal(component)}
+                        className="min-w-0 rounded-lg border border-brand-200 px-3 py-2 text-xs font-semibold text-brand-700"
+                      >
+                        Kelola Detail
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => openEditForm(component)}
+                        className="flex items-center justify-center rounded-lg border border-slate-200 text-slate-600"
+                        aria-label={`Edit ${component.name}`}
+                      >
+                        <Edit2 className="h-4 w-4" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setDeleteConfirm(component.id)}
+                        className="flex items-center justify-center rounded-lg border border-rose-200 text-rose-600"
+                        aria-label={`Hapus ${component.name}`}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+
+              <div className="hidden max-w-full overflow-x-auto rounded-xl border border-slate-200 bg-white md:block">
+                <table className="w-full min-w-[780px] table-fixed divide-y divide-slate-200">
                   <thead className="bg-slate-50">
                     <tr>
                       <th className="w-[17%] px-4 py-3 text-left text-xs font-semibold text-slate-600">ID</th>
@@ -607,6 +666,7 @@ export function ComponentsManager() {
                         <td className="px-4 py-3 text-right">
                           <div className="flex items-center justify-end gap-1">
                             <button
+                              type="button"
                               onClick={() => void openDetailModal(component)}
                               className="rounded-lg px-2.5 py-2 text-xs font-semibold text-brand-700 transition-colors hover:bg-brand-50"
                               title="Kelola Detail"
@@ -614,6 +674,7 @@ export function ComponentsManager() {
                               Detail
                             </button>
                             <button
+                              type="button"
                               onClick={() => openEditForm(component)}
                               className="rounded-lg p-2 text-slate-500 transition-colors hover:bg-brand-50 hover:text-brand-600"
                               title="Edit"
@@ -621,6 +682,7 @@ export function ComponentsManager() {
                               <Edit2 className="h-4 w-4" />
                             </button>
                             <button
+                              type="button"
                               onClick={() => setDeleteConfirm(component.id)}
                               className="rounded-lg p-2 text-slate-500 transition-colors hover:bg-rose-50 hover:text-rose-600"
                               title="Hapus"
@@ -647,7 +709,7 @@ export function ComponentsManager() {
       )}
 
       {showForm && createPortal((
-        <div className="fixed inset-0 z-[60] flex items-center justify-center overflow-y-auto p-4">
+        <div className="fixed inset-0 z-[60] flex items-start justify-center overflow-y-auto p-2 sm:items-center sm:p-4">
           <div className="fixed inset-0 bg-black/50" onClick={closeForm} />
           <div className="relative max-h-[calc(100vh-2rem)] w-full max-w-lg overflow-y-auto rounded-xl bg-white p-6 shadow-xl">
             <div className="mb-4 flex items-center justify-between">
@@ -830,29 +892,30 @@ export function ComponentsManager() {
       ), document.body)}
 
       {showDetailModal && activeDetailComponent && createPortal((
-        <div className="fixed inset-0 z-[60] flex items-center justify-center overflow-y-auto p-4">
+        <div className="fixed inset-0 z-[60] flex items-start justify-center overflow-y-auto p-2 sm:items-center sm:p-4">
           <div className="fixed inset-0 bg-black/50" onClick={closeDetailModal} />
-          <div className="relative max-h-[calc(100vh-2rem)] w-full max-w-5xl overflow-y-auto rounded-xl bg-white p-6 shadow-xl">
-            <div className="mb-4 flex items-center justify-between">
-              <div>
+          <div className="relative max-h-[calc(100dvh-1rem)] w-full max-w-7xl overflow-x-hidden overflow-y-auto rounded-xl bg-white p-4 shadow-xl sm:max-h-[calc(100dvh-2rem)] sm:p-6">
+            <div className="mb-4 flex min-w-0 items-start justify-between gap-3">
+              <div className="min-w-0">
                 <h3 className="text-lg font-semibold text-slate-900">Detail Komponen</h3>
-                <p className="text-sm text-slate-600">
+                <p className="break-words text-sm text-slate-600">
                   {activeDetailComponent.name} ({activeDetailComponent.id})
                 </p>
               </div>
               <button
                 onClick={closeDetailModal}
-                className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+                aria-label="Tutup detail komponen"
               >
                 <X className="h-5 w-5" />
               </button>
             </div>
 
-            <div className="grid gap-6 lg:grid-cols-[1.8fr_1fr]">
-              <div className="space-y-3">
-                <div className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2">
+            <div className="grid min-w-0 gap-6 lg:grid-cols-[minmax(0,1.8fr)_minmax(280px,1fr)]">
+              <div className="min-w-0 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-slate-50 px-3 py-2">
                   <div className="text-sm text-slate-600">Total detail komponen</div>
-                  <div className="text-sm font-semibold text-slate-900">{formatRupiah(Math.round(fTotal))}</div>
+                  <div className="break-all text-right text-sm font-semibold text-slate-900">{formatRupiah(Math.round(fTotal))}</div>
                 </div>
 
                 {detailsLoading ? (
@@ -864,8 +927,16 @@ export function ComponentsManager() {
                     Belum ada detail. Tambahkan uraian pertama untuk komponen ini.
                   </div>
                 ) : (
-                  <div className="max-h-[55vh] overflow-auto rounded-xl border border-slate-200">
-                    <table className="min-w-full divide-y divide-slate-200">
+                  <div className="max-h-[52dvh] max-w-full overflow-y-auto overflow-x-hidden overscroll-contain rounded-xl border border-slate-200">
+                    <table className="catalog-detail-table w-full table-fixed divide-y divide-slate-200">
+                      <colgroup>
+                        <col className="w-[34%]" />
+                        <col className="w-[8%]" />
+                        <col className="w-[13%]" />
+                        <col className="w-[17%]" />
+                        <col className="w-[18%]" />
+                        <col className="w-[10%]" />
+                      </colgroup>
                       <thead className="bg-slate-50">
                         <tr>
                           <th className="px-3 py-2 text-left text-xs font-semibold text-slate-600">Uraian</th>
@@ -893,7 +964,7 @@ export function ComponentsManager() {
                             ) : (
                               group.items.map((detail) => (
                                 <tr key={detail.id}>
-                                  <td className="px-3 py-2 text-sm text-slate-800">{detail.uraian}</td>
+                                  <td className="break-words px-3 py-2 text-sm text-slate-800">{detail.uraian}</td>
                                   <td className="px-3 py-2 text-sm text-slate-600">{detail.satuan}</td>
                                   <td className="px-3 py-2 text-right text-sm text-slate-700">
                                     {parseNumber(detail.koefisien).toLocaleString('id-ID', { maximumFractionDigits: 4 })}
@@ -976,11 +1047,11 @@ export function ComponentsManager() {
                 )}
               </div>
 
-              <div>
+              <div className="min-w-0">
                 <h4 className="mb-3 text-sm font-semibold text-slate-800">
                   {editingDetailId ? 'Edit Detail Uraian' : 'Tambah Detail Uraian'}
                 </h4>
-                <form onSubmit={handleDetailSubmit} className="space-y-3 rounded-xl border border-slate-200 p-4">
+                <form onSubmit={handleDetailSubmit} className="min-w-0 space-y-3 rounded-xl border border-slate-200 p-3 sm:p-4">
                   {detailError && (
                     <div className="flex items-center gap-2 rounded-lg bg-rose-50 p-3 text-xs text-rose-700">
                       <AlertCircle className="h-4 w-4 flex-shrink-0" />
@@ -1072,7 +1143,7 @@ export function ComponentsManager() {
                     )}
                   </div>
 
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <div>
                       <label className="mb-1.5 block text-sm font-medium text-slate-700">Koefisien</label>
                       <input
@@ -1111,12 +1182,12 @@ export function ComponentsManager() {
                     Jumlah Harga: <span className="font-semibold text-slate-900">{formatRupiah(Math.round(detailSubtotal))}</span>
                   </div>
 
-                  <div className="flex justify-end gap-2 pt-1">
+                  <div className="flex flex-col-reverse gap-2 pt-1 sm:flex-row sm:justify-end">
                     {editingDetailId && (
                       <button
                         type="button"
                         onClick={resetDetailEditor}
-                        className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                        className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 sm:w-auto"
                       >
                         Batal Edit
                       </button>
@@ -1124,7 +1195,7 @@ export function ComponentsManager() {
                     <button
                       type="submit"
                       disabled={detailsSaving}
-                      className="inline-flex items-center gap-2 rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-50"
+                      className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-50 sm:w-auto"
                     >
                       {detailsSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
                       {editingDetailId ? 'Update Detail' : 'Simpan Detail'}

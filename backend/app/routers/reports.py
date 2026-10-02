@@ -18,7 +18,7 @@ def _require_admin(payload: dict) -> str:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token tidak valid")
 
     row = execute_query(
-        "SELECT 1 FROM public.admin_users WHERE user_id = %s",
+        "SELECT 1 FROM auth.users WHERE id = %s AND raw_app_meta_data->>'app_role' = 'admin'",
         (user_id,),
         fetch="one",
     )

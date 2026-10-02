@@ -7,8 +7,13 @@ interface AuthContextValue {
   session: Session | null;
   loading: boolean;
   isAdmin: boolean;
-  signIn: (email: string, password: string) => Promise<{ error: string | null }>;
+  signIn: (email: string, password: string, captchaToken?: string) => Promise<{ error: string | null }>;
   signUp: (email: string, password: string) => Promise<{ error: string | null }>;
+  isEmailRegistered: (email: string) => Promise<boolean | null>;
+  sendSignUpCode: (email: string, captchaToken?: string) => Promise<{ error: string | null }>;
+  verifySignUpCode: (email: string, token: string, password: string) => Promise<{ error: string | null }>;
+  sendPasswordResetCode: (email: string, captchaToken?: string) => Promise<{ error: string | null }>;
+  resetPasswordWithCode: (email: string, token: string, password: string) => Promise<{ error: string | null }>;
   signInWithGoogle: () => Promise<{ error: string | null }>;
   signOut: () => Promise<void>;
 }
@@ -79,8 +84,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, [user]);
 
-  const signIn = useCallback(async (email: string, password: string) => {
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
+  const signIn = useCallback(async (email: string, password: string, captchaToken?: string) => {
+    const { error } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+      options: { captchaToken },
+    });
     return { error: error?.message ?? null };
   }, []);
 
@@ -89,10 +98,46 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return { error: error?.message ?? null };
   }, []);
 
+  const isEmailRegistered = useCallback(async (email: string) => {
+    const { data, error } = await supabase.rpc('email_is_registered', { check_email: email });
+    if (error) return null;
+    return data === true;
+  }, []);
+
+  const sendSignUpCode = useCallback(async (email: string, captchaToken?: string) => {
+    const { error } = await supabase.auth.signInWithOtp({
+      email,
+      options: { shouldCreateUser: true, captchaToken },
+    });
+    return { error: error?.message ?? null };
+  }, []);
+
+  const verifySignUpCode = useCallback(async (email: string, token: string, password: string) => {
+    const { error: verifyError } = await supabase.auth.verifyOtp({ email, token, type: 'email' });
+    if (verifyError) return { error: verifyError.message };
+    const { error: passwordError } = await supabase.auth.updateUser({ password });
+    return { error: passwordError?.message ?? null };
+  }, []);
+
+  // Lupa password: Supabase mengirim kode 6 digit lewat template email "Reset Password".
+  // Untuk email yang tidak terdaftar, Supabase tetap mengembalikan sukses tanpa mengirim email.
+  const sendPasswordResetCode = useCallback(async (email: string, captchaToken?: string) => {
+    const { error } = await supabase.auth.resetPasswordForEmail(email, { captchaToken });
+    return { error: error?.message ?? null };
+  }, []);
+
+  const resetPasswordWithCode = useCallback(async (email: string, token: string, password: string) => {
+    const { error: verifyError } = await supabase.auth.verifyOtp({ email, token, type: 'recovery' });
+    if (verifyError) return { error: verifyError.message };
+    const { error: passwordError } = await supabase.auth.updateUser({ password });
+    return { error: passwordError?.message ?? null };
+  }, []);
+
   const signInWithGoogle = useCallback(async () => {
+    const redirectTo = new URL('/', window.location.href).toString();
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
-      options: { redirectTo: window.location.origin },
+      options: { redirectTo },
     });
     return { error: error?.message ?? null };
   }, []);
@@ -113,7 +158,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, session, loading, isAdmin, signIn, signUp, signInWithGoogle, signOut }}>
+    <AuthContext.Provider value={{ user, session, loading, isAdmin, signIn, signUp, isEmailRegistered, sendSignUpCode, verifySignUpCode, sendPasswordResetCode, resetPasswordWithCode, signInWithGoogle, signOut }}>
       {children}
     </AuthContext.Provider>
   );

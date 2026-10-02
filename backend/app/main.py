@@ -1,13 +1,12 @@
 """
 Entry point aplikasi FastAPI untuk VoltRAB.
 Menyediakan:
-- Penyimpanan progres RAB per pengguna
 - Deteksi komponen SLD dengan YOLOv8
 """
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import CORS_ORIGINS
-from app.routers import projects, detection, reports
+from app.routers import detection, reports
 
 app = FastAPI(
     title="VoltRAB API",
@@ -23,7 +22,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(projects.router)
 app.include_router(detection.router)
 app.include_router(reports.router)
 
