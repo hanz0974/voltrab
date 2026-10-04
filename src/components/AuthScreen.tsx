@@ -31,7 +31,7 @@ function translateAuthError(message: string): string {
 }
 
 export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
-  const { signIn, isEmailRegistered, sendSignUpCode, verifySignUpCode, sendPasswordResetCode, resetPasswordWithCode, signInWithGoogle } = useAuth();
+  const { signIn, sendSignUpCode, verifySignUpCode, sendPasswordResetCode, resetPasswordWithCode, signInWithGoogle } = useAuth();
   const [mode, setMode] = useState<'login' | 'register' | 'forgot'>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -131,15 +131,9 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
       return;
     }
 
-    let message = translateAuthError(result.error);
-    if (mode === 'login' && result.error.toLowerCase().includes('invalid login credentials')) {
-      const registered = await isEmailRegistered(email.trim());
-      if (registered === false) {
-        message = 'Akun dengan email ini belum terdaftar. Silakan daftar dulu lewat tab Daftar.';
-      } else if (registered === true) {
-        message = 'Password salah. Periksa kembali password Anda.';
-      }
-    }
+    // Pesan login gagal dibuat sama untuk semua email agar tidak mengungkapkan email yang terdaftar.
+    // RPC email_is_registered sudah ditutup untuk pengguna yang belum masuk (perbaikan keamanan M5).
+    const message = translateAuthError(result.error);
 
     setLoading(false);
     setError(message);

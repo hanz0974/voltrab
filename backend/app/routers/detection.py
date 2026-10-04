@@ -10,6 +10,7 @@ import threading
 import tempfile
 import cv2
 import numpy as np
+from PIL import Image as _PILImage
 import onnxruntime as ort
 import requests
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, status
@@ -276,6 +277,28 @@ async def detect_components(
     file_path = os.path.join(UPLOAD_DIR, file_name)
 
     content = await file.read()
+    # M6: validasi isi file benar-benar gambar (bukan sekadar content_type dari client).
+    # Tolak SVG (bisa sisipkan script) dan format berbahaya lain.
+    try:
+        import io as _io
+        _img = _PILImage.open(_io.BytesIO(content))
+        _img.verify()  # pastikan file gambar valid
+        _img = _PILImage.open(_io.BytesIO(content))  # buka ulang setelah verify
+        if _img.format not in ("JPEG", "PNG", "WEBP", "BMP"):
+            raise ValueError(f"format {_img.format} tidak diizinkan")
+        # Re-encode ke format aman (buang metadata/script tersembunyi)
+        _buf = _io.BytesIO()
+        _save_fmt = "PNG" if _img.format == "PNG" else "JPEG"
+        if _save_fmt == "JPEG" and _img.mode in ("RGBA", "LA", "PA"):
+            _img = _img.convert("RGB")
+        _img.save(_buf, format=_save_fmt)
+        content = _buf.getvalue()
+        _safe_mime = "image/png" if _save_fmt == "PNG" else "image/jpeg"
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File bukan gambar yang valid",
+        )
     with open(file_path, "wb") as f:
         f.write(content)
 
@@ -290,7 +313,7 @@ async def detect_components(
     image_b64 = None
     try:
         with open(file_path, "rb") as f:
-            image_b64 = f"data:{file.content_type};base64,{base64.b64encode(f.read()).decode()}"
+            image_b64 = f"data:{_safe_mime};base64,{base64.b64encode(f.read()).decode()}"
     except Exception:
         pass
 

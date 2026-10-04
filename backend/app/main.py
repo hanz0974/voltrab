@@ -8,10 +8,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import CORS_ORIGINS
 from app.routers import detection, reports
 
+import os as _os
+_DOCS_ON = _os.getenv("ENABLE_API_DOCS", "false").lower() == "true"
 app = FastAPI(
     title="VoltRAB API",
     description="Backend API untuk RAB Kelistrikan & Deteksi SLD dengan YOLOv8",
     version="1.0.0",
+    docs_url="/docs" if _DOCS_ON else None,
+    redoc_url="/redoc" if _DOCS_ON else None,
+    openapi_url="/openapi.json" if _DOCS_ON else None,
 )
 
 app.add_middleware(
