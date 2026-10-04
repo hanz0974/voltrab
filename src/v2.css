@@ -1091,16 +1091,12 @@ button, a {
 .reports-heading p { margin: 0; color: #7c8d99; }
 
 .editor-stepper {
-  position: sticky;
-  top: 92px;
-  z-index: 10;
   margin-bottom: 18px;
   border: 1px solid #dfe7ec;
   border-radius: 13px;
-  background: rgba(255,255,255,.95);
+  background: #fff;
   padding: 18px 24px;
   box-shadow: 0 10px 35px rgba(20,55,78,.05);
-  backdrop-filter: blur(10px);
 }
 
 .editor-surface,
@@ -1424,7 +1420,7 @@ button, a {
   .live-project-bars button { min-width: 55px; }
   .editor-heading, .workspace-page-heading, .reports-heading { display: block; }
   .editor-heading > button, .reports-heading > button { margin-top: 14px; }
-  .editor-stepper { top: 80px; padding: 14px 10px; }
+  .editor-stepper { padding: 14px 10px; }
   .editor-surface, .manager-surface { padding: 16px; border-radius: 12px; }
   .report-stats { grid-template-columns: 1fr; }
   .auth-back { position: absolute; top: 12px; left: 12px; }

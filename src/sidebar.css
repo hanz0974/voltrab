@@ -1,0 +1,405 @@
+/* =============================================================================
+   Sidebar yang dapat diciutkan menjadi mode ikon.
+   Pola perilaku mengikuti komponen Sidebar shadcn/ui (lisensi MIT): mode ikon,
+   tooltip, pintasan Ctrl+B, dan status yang tersimpan. Kode ditulis khusus
+   untuk VoltRAB di atas gaya v2.css dan dimuat setelahnya di main.tsx.
+   ============================================================================= */
+
+#app {
+  /* Ukuran ringkas mengikuti proporsi sidebar Roboflow */
+  --sidebar-width: 200px;
+  --sidebar-collapsed-width: 64px;
+  --sidebar-duration: 280ms;
+  --sidebar-ease: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+/* ---------- Desktop dan tablet lebar: sidebar menyempit menjadi ikon ---------- */
+/*
+   Urutan lapisan (z-index) halaman kerja:
+   navbar 20 < sidebar 30 < panel flyout 40 < semua modal (50 ke atas)
+*/
+@media (min-width: 901px) {
+  #app .sidebar,
+  #app .sidebar.collapsed {
+    z-index: 30;
+    /* Padding samping dibuat tetap agar ikon tidak bergeser saat lebar berubah */
+    padding-top: 22px;
+    padding-left: 12px;
+    padding-right: 12px;
+    overflow: visible;
+    transition: width var(--sidebar-duration) var(--sidebar-ease);
+  }
+
+  #app .sidebar { width: var(--sidebar-width); }
+  #app .app-main {
+    margin-left: var(--sidebar-width);
+    width: calc(100% - var(--sidebar-width));
+    transition:
+      margin-left var(--sidebar-duration) var(--sidebar-ease),
+      width var(--sidebar-duration) var(--sidebar-ease);
+  }
+
+  #app.sidebar-is-collapsed .sidebar,
+  #app .sidebar.collapsed { width: var(--sidebar-collapsed-width); }
+  #app.sidebar-is-collapsed .app-main {
+    margin-left: var(--sidebar-collapsed-width);
+    width: calc(100% - var(--sidebar-collapsed-width));
+  }
+
+  /* Label memudar dan bergeser, bukan langsung hilang */
+  #app .sidebar .sidebar-brand-copy,
+  #app .sidebar .side-link em,
+  #app .sidebar .collapse span {
+    display: inline-block;
+    max-width: 190px;
+    overflow: hidden;
+    white-space: nowrap;
+    opacity: 1;
+    transform: translateX(0);
+    transition:
+      max-width var(--sidebar-duration) var(--sidebar-ease),
+      opacity 180ms ease 60ms,
+      transform var(--sidebar-duration) var(--sidebar-ease);
+  }
+  #app .sidebar.collapsed .sidebar-brand-copy,
+  #app .sidebar.collapsed .side-link em,
+  #app .sidebar.collapsed .collapse span {
+    display: inline-block;
+    max-width: 0;
+    opacity: 0;
+    transform: translateX(-6px);
+    transition:
+      max-width var(--sidebar-duration) var(--sidebar-ease),
+      opacity 120ms ease,
+      transform var(--sidebar-duration) var(--sidebar-ease);
+  }
+
+  #app .sidebar .brand.inverse,
+  #app .sidebar.collapsed .brand.inverse {
+    margin-left: 2px;
+    margin-right: 0;
+    margin-bottom: 24px;
+    font-size: 19px;
+    transition: gap var(--sidebar-duration) var(--sidebar-ease);
+  }
+  #app .sidebar .brand-mark { width: 36px; height: 36px; font-size: 22px; }
+
+  /* Ikon tetap di posisi yang sama pada kedua keadaan */
+  #app .sidebar .side-link,
+  #app .sidebar.collapsed .side-link {
+    position: relative;
+    justify-content: flex-start;
+    min-height: 42px;
+    padding: 10px 11px;
+    font-size: 13px;
+    transition: gap var(--sidebar-duration) var(--sidebar-ease), background-color 150ms ease, color 150ms ease;
+  }
+  #app .sidebar .side-link { gap: 10px; }
+  #app .sidebar.collapsed .side-link { gap: 0; }
+  #app .sidebar .side-link span { width: 18px; }
+  #app .sidebar .side-link svg,
+  #app .sidebar .collapse svg { width: 18px; height: 18px; }
+
+  /* Judul kelompok menu berubah menjadi garis pemisah tipis */
+  #app .sidebar .workspace-label {
+    display: block;
+    margin: 16px 11px 8px;
+    overflow: hidden;
+    white-space: nowrap;
+    transition:
+      color 150ms ease,
+      height var(--sidebar-duration) var(--sidebar-ease),
+      margin var(--sidebar-duration) var(--sidebar-ease),
+      background-color 150ms ease;
+  }
+  #app .sidebar.collapsed .workspace-label {
+    display: block;
+    height: 1px;
+    margin: 14px 8px;
+    color: transparent;
+    background: rgba(255, 255, 255, 0.14);
+  }
+
+  /* Jumlah proyek menjadi angka kecil di pojok ikon */
+  #app .sidebar .side-link b { transition: all var(--sidebar-duration) var(--sidebar-ease); }
+  #app .sidebar.collapsed .side-link b {
+    display: block;
+    position: absolute;
+    top: 4px;
+    left: 22px;
+    min-width: 17px;
+    padding: 1px 5px;
+    font-size: 9px;
+    line-height: 13px;
+    text-align: center;
+  }
+
+  /* Tombol ciutkan: ikon berputar sesuai arah */
+  #app .sidebar .collapse {
+    position: relative;
+    justify-content: flex-start;
+    padding-left: 11px;
+    padding-right: 11px;
+    transition: gap var(--sidebar-duration) var(--sidebar-ease);
+  }
+  #app .sidebar.collapsed .collapse { gap: 0; }
+  #app .sidebar .collapse svg { transition: transform var(--sidebar-duration) var(--sidebar-ease); }
+  #app .sidebar.collapsed .collapse svg { transform: rotate(180deg); }
+
+  /* Tooltip nama menu saat sidebar diciutkan */
+  #app .sidebar.collapsed [data-tooltip]:hover::after,
+  #app .sidebar.collapsed [data-tooltip]:focus-visible::after {
+    content: attr(data-tooltip);
+    position: absolute;
+    left: calc(100% + 14px);
+    top: 50%;
+    z-index: 60;
+    padding: 6px 10px;
+    border-radius: 8px;
+    background: #0b2947;
+    color: #fff;
+    font-size: 12px;
+    font-weight: 600;
+    font-style: normal;
+    line-height: 1.2;
+    white-space: nowrap;
+    box-shadow: 0 8px 24px rgba(3, 18, 34, 0.28);
+    pointer-events: none;
+    animation: sidebar-tooltip-in 140ms ease-out both;
+  }
+}
+
+@keyframes sidebar-tooltip-in {
+  from { opacity: 0; transform: translate(-4px, -50%); }
+  to { opacity: 1; transform: translate(0, -50%); }
+}
+
+/* ---------- HP dan tablet kecil: laci yang meluncur dari kiri ---------- */
+@media (max-width: 900px) {
+  #app .sidebar,
+  #app .sidebar.collapsed {
+    transition: transform var(--sidebar-duration) var(--sidebar-ease);
+  }
+  #app .sidebar.mobile-open { box-shadow: 18px 0 48px rgba(3, 18, 34, 0.35); }
+  /* Mode ikon hanya berlaku di desktop; laci HP ditutup dengan tombol silang */
+  #app .sidebar > .collapse { display: none; }
+  .mobile-sidebar-backdrop { animation: sidebar-backdrop-in 200ms ease-out both; }
+}
+
+@keyframes sidebar-backdrop-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* ---------- Panel samping (flyout) seperti sidebar Roboflow ---------- */
+#app .sidebar-flyout {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: var(--sidebar-width);
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 288px;
+  padding: 26px 16px;
+  background: #0b2947;
+  color: #fff;
+  border-left: 1px solid rgba(255, 255, 255, 0.06);
+  box-shadow: 24px 0 48px rgba(3, 18, 34, 0.28);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateX(-10px);
+  transition:
+    opacity 160ms ease,
+    transform 220ms var(--sidebar-ease),
+    left var(--sidebar-duration) var(--sidebar-ease),
+    visibility 0s linear 220ms;
+}
+#app .sidebar-flyout.is-open {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: translateX(0);
+  transition:
+    opacity 160ms ease,
+    transform 220ms var(--sidebar-ease),
+    left var(--sidebar-duration) var(--sidebar-ease),
+    visibility 0s;
+}
+#app.sidebar-is-collapsed .sidebar-flyout { left: var(--sidebar-collapsed-width); }
+
+#app .sidebar-flyout-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 4px 6px 6px;
+}
+#app .sidebar-flyout-title { margin: 0; font-size: 16px; font-weight: 800; letter-spacing: -0.2px; }
+#app .sidebar-flyout-head span { font-size: 11px; color: #8fa6b8; }
+
+#app .sidebar-flyout-new {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 11px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  color: #fff;
+  font: 700 13px "Plus Jakarta Sans", Arial, sans-serif;
+  cursor: pointer;
+  transition: background-color 150ms ease, border-color 150ms ease;
+}
+#app .sidebar-flyout-new:hover { background: rgba(255, 255, 255, 0.1); border-color: rgba(255, 255, 255, 0.24); }
+#app .sidebar-flyout-new svg { width: 16px; height: 16px; }
+
+#app .sidebar-flyout-section {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 6px 0;
+  color: #6f8498;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 1.3px;
+}
+#app .sidebar-flyout-section button {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  background: none;
+  color: #8fd3e2;
+  font: 700 11px "Plus Jakarta Sans", Arial, sans-serif;
+  letter-spacing: normal;
+  cursor: pointer;
+}
+#app .sidebar-flyout-section button:hover { color: #fff; }
+#app .sidebar-flyout-section svg { width: 13px; height: 13px; }
+
+#app .sidebar-flyout ul {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+#app .sidebar-flyout-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  padding: 10px;
+  border: 0;
+  border-radius: 9px;
+  background: none;
+  color: #c7d4df;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 150ms ease, color 150ms ease;
+}
+#app .sidebar-flyout-item:hover,
+#app .sidebar-flyout-item.active { background: rgba(13, 145, 174, 0.2); color: #fff; }
+#app .sidebar-flyout-item svg { flex: 0 0 auto; width: 16px; height: 16px; margin-top: 2px; color: #58c4d8; }
+#app .sidebar-flyout-item > span { flex: 1; min-width: 0; }
+#app .sidebar-flyout-item b,
+#app .sidebar-flyout-item small {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+#app .sidebar-flyout-item b { font-size: 13px; font-weight: 700; }
+#app .sidebar-flyout-item small { margin-top: 3px; font-size: 11px; color: #8fa6b8; }
+#app .sidebar-flyout-empty { margin: 0; padding: 6px; font-size: 12px; color: #8fa6b8; }
+#app .sidebar-flyout-error {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(244, 63, 94, 0.14);
+  color: #fecdd3;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+/* Baris laporan: tombol buka di kiri dan tombol unduh Excel di kanan */
+#app .sidebar-flyout-row { display: flex; align-items: center; gap: 4px; }
+#app .sidebar-flyout-row .sidebar-flyout-item { flex: 1; min-width: 0; }
+#app .sidebar-flyout-action {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #8fd3e2;
+  cursor: pointer;
+  transition: background-color 150ms ease, color 150ms ease;
+}
+#app .sidebar-flyout-action:hover:not(:disabled) { background: rgba(13, 145, 174, 0.22); color: #fff; }
+#app .sidebar-flyout-action:disabled { cursor: wait; opacity: 0.6; }
+#app .sidebar-flyout-action svg { width: 16px; height: 16px; }
+
+/* Baris ringkas (kategori komponen) dengan angka jumlah di kanan */
+#app .sidebar-flyout-item.is-compact { align-items: center; }
+#app .sidebar-flyout-item.is-compact svg { margin-top: 0; }
+#app .sidebar-flyout-count {
+  margin-left: auto;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.07);
+  color: #8fa6b8;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 700;
+}
+#app .sidebar-flyout-item:hover .sidebar-flyout-count { background: rgba(255, 255, 255, 0.14); color: #fff; }
+
+/* Baris laporan yang dibuka dari panel samping disorot sebentar */
+.report-table tr.report-row-flash td { animation: report-row-flash 2.4s ease-out both; }
+@keyframes report-row-flash {
+  0%, 35% { background-color: rgba(13, 145, 174, 0.16); }
+  100% { background-color: transparent; }
+}
+
+/* Daftar proyek muncul berurutan saat panel terbuka */
+#app .sidebar-flyout.is-open li { animation: sidebar-flyout-item-in 260ms var(--sidebar-ease) both; }
+#app .sidebar-flyout.is-open li:nth-child(2) { animation-delay: 30ms; }
+#app .sidebar-flyout.is-open li:nth-child(3) { animation-delay: 60ms; }
+#app .sidebar-flyout.is-open li:nth-child(4) { animation-delay: 90ms; }
+#app .sidebar-flyout.is-open li:nth-child(5) { animation-delay: 120ms; }
+#app .sidebar-flyout.is-open li:nth-child(6) { animation-delay: 150ms; }
+
+@keyframes sidebar-flyout-item-in {
+  from { opacity: 0; transform: translateX(-6px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+/* Menu yang sedang membuka flyout ikut disorot; tooltip disembunyikan agar tidak menumpuk */
+#app .sidebar .side-link.flyout-active:not(.active) { background: rgba(255, 255, 255, 0.08); color: #fff; }
+#app.sidebar-flyout-open .sidebar.collapsed [data-tooltip]:hover::after { display: none; }
+
+@media (max-width: 900px) {
+  #app .sidebar-flyout { display: none; }
+}
+
+/* Pengguna yang mengaktifkan pengurangan animasi di perangkatnya */
+@media (prefers-reduced-motion: reduce) {
+  #app .sidebar,
+  #app .sidebar *,
+  #app .sidebar-flyout,
+  #app .sidebar-flyout *,
+  #app .app-main,
+  .mobile-sidebar-backdrop {
+    transition-duration: 1ms !important;
+    animation: none !important;
+  }
+}

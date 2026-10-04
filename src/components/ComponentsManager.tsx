@@ -40,7 +40,7 @@ interface DetailKomponenRecord {
   updated_at: string;
 }
 
-const CATEGORIES: PartCategory[] = [
+export const CATEGORIES: PartCategory[] = [
   'Pengaman',
   'Penerangan',
   'Saklar & Stop Kontak',
@@ -95,7 +95,15 @@ const formatRupiahInput = (value: number | string): string => {
   return new Intl.NumberFormat('id-ID').format(numericValue);
 };
 
-export function ComponentsManager() {
+interface ComponentsManagerProps {
+  /**
+   * Permintaan dari panel samping: filter kategori dan, bila openForm bernilai true, membuka formulir tambah.
+   * Nonce membuat permintaan yang sama dapat diulang.
+   */
+  categoryRequest?: { category: PartCategory | 'all'; nonce: number; openForm?: boolean };
+}
+
+export function ComponentsManager({ categoryRequest }: ComponentsManagerProps = {}) {
   const [components, setComponents] = useState<ComponentRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -223,6 +231,16 @@ export function ComponentsManager() {
     setShowForm(true);
     setError(null);
   };
+
+  // Permintaan dari panel samping: kosongkan pencarian, terapkan filter, dan buka formulir tambah bila diminta
+  useEffect(() => {
+    if (!categoryRequest) return;
+    setSearchQuery('');
+    setCategoryFilter(categoryRequest.category);
+    if (categoryRequest.openForm) openAddForm();
+    // openAddForm hanya memakai setter state yang stabil
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [categoryRequest]);
 
   const openEditForm = (component: ComponentRecord) => {
     setEditingComponent(component);

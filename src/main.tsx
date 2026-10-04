@@ -5,6 +5,8 @@ import App from './App.tsx';
 import { AuthProvider } from './lib/auth';
 import './index.css';
 import './v2.css';
+// Dimuat setelah v2.css agar aturan sidebar yang dapat diciutkan menimpa gaya lama
+import './sidebar.css';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

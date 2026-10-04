@@ -9,10 +9,7 @@ import {
   PencilIcon,
   Send,
   MessageSquareWarning,
-  Ruler,
-  Calculator,
   ChevronDown,
-  Plus,
   Search,
   Undo2,
   Trash2,
@@ -42,13 +39,10 @@ interface TrainingAnnotation {
 }
 
 const MODEL_CLASS_TO_CATEGORY: Record<string, PartCategory> = {
-  "rmdl pl-c 13w": "Penerangan",
-  "exit lamp": "Penerangan",
-  "reflector and louvre m5": "Penerangan",
-  "stage lamp gms light 1xtl5 14w": "Penerangan",
-  fitting: "Penerangan",
-  "local switch 1 way 1 gang": "Saklar & Stop Kontak",
-  "local switch 2 way 1 gang": "Saklar & Stop Kontak",
+  "titik lampu": "Penerangan",
+  "saklar tunggal": "Saklar & Stop Kontak",
+  "saklar ganda": "Saklar & Stop Kontak",
+  "stop kontak": "Saklar & Stop Kontak",
 };
 
 const inferDetectedCategory = (label: string): PartCategory => {
@@ -98,19 +92,6 @@ export function DetectionModal({
   const [annotationStart, setAnnotationStart] = useState<{ x: number; y: number } | null>(null);
   const [annotationDraft, setAnnotationDraft] = useState<TrainingAnnotation["bbox"] | null>(null);
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
-
-  // --- STATE KALIBRASI & PERHITUNGAN KABEL ---
-  const [showCalibration, setShowCalibration] = useState(false);
-  const [isCalibrating, setIsCalibrating] = useState(false);
-  const [calibrationStart, setCalibrationStart] = useState<{ x: number; y: number } | null>(null);
-  const [calibrationEnd, setCalibrationEnd] = useState<{ x: number; y: number } | null>(null);
-  const [manualLengthInput, setManualLengthInput] = useState<string>("1.0"); // dalam meter
-  const [ceilingHeightInput, setCeilingHeightInput] = useState<string>("3.0"); // tinggi plafon dalam meter
-  const [switchHeightInput, setSwitchHeightInput] = useState<string>("1.5"); // tinggi saklar dalam meter
-  const [scalePerPercent, setScalePerPercent] = useState<number | null>(null); // meter per persentase koordinat
-  const [calculatedCableLength, setCalculatedCableLength] = useState<number | null>(null);
-  const [cableComponentId, setCableComponentId] = useState<string>("");
-  const imageContainerRef = useRef<HTMLDivElement>(null);
   const annotationImageRef = useRef<HTMLDivElement>(null);
 
   const fileRef = useRef<HTMLInputElement>(null);
@@ -121,9 +102,6 @@ export function DetectionModal({
     component.category.toLowerCase().includes(manualSearch.toLowerCase()),
   );
 
-  const cableComponents = catalogComponents.filter(
-    (component) => component.category.toLowerCase() === "kabel",
-  );
   const selectedDetectionCount = detections.filter((detection) => detection.matchedComponentId).length;
   const allDetectionsSelected = detections.length > 0 && selectedDetectionCount === detections.length;
   const reportReady = reportComplaint.trim().length >= 5 && trainingAnnotations.length > 0;
@@ -164,13 +142,6 @@ export function DetectionModal({
       setAnnotationStart(null);
       setAnnotationDraft(null);
       setSelectedAnnotationId(null);
-      setShowCalibration(false);
-      setIsCalibrating(false);
-      setCalibrationStart(null);
-      setCalibrationEnd(null);
-      setScalePerPercent(null);
-      setCalculatedCableLength(null);
-      setCableComponentId("");
     }
   }, [open]);
 
@@ -245,99 +216,6 @@ export function DetectionModal({
     setSelectedAnnotationId(null);
     setAnnotationStart(null);
     setAnnotationDraft(null);
-  };
-
-  // Set default komponen kabel jika tersedia di katalog
-  useEffect(() => {
-    if (cableComponents.length > 0 && !cableComponentId) {
-      const defaultCable = cableComponents[0];
-      if (defaultCable) {
-        setCableComponentId(defaultCable.id);
-      }
-    }
-  }, [cableComponents, cableComponentId]);
-
-  // Hitung total panjang kabel berdasarkan kalibrasi dan jalur titik komponen terdeteksi
-  useEffect(() => {
-    if (scalePerPercent === null || detections.length < 2) {
-      setCalculatedCableLength(null);
-      return;
-    }
-
-    let totalHorizontalDistance = 0;
-    for (let i = 0; i < detections.length - 1; i++) {
-      const curr = detections[i].bbox;
-      const next = detections[i + 1].bbox;
-      const currCenter = { x: curr.x + curr.width / 2, y: curr.y + curr.height / 2 };
-      const nextCenter = { x: next.x + next.width / 2, y: next.y + next.height / 2 };
-      
-      // Jarak Manhattan / Siku-siku (tarikan kabel horizontal di plafon/dinding)
-      const distPercent = Math.abs(nextCenter.x - currCenter.x) + Math.abs(nextCenter.y - currCenter.y);
-      totalHorizontalDistance += distPercent * scalePerPercent;
-    }
-
-    const ceiling = parseFloat(ceilingHeightInput) || 3.0;
-    const switchH = parseFloat(switchHeightInput) || 1.5;
-    const verticalDropPerSwitch = Math.max(0, ceiling - switchH);
-
-    // Hitung berapa banyak komponen saklar / stop kontak yang butuh tarikan kabel turun vertikal dari plafon
-    const verticalDropsCount = detections.filter(d => 
-      d.label.toLowerCase().includes("switch") || 
-      d.label.toLowerCase().includes("saklar") || 
-      d.label.toLowerCase().includes("stop") ||
-      d.label.toLowerCase().includes("panel") ||
-      d.label.toLowerCase().includes("mcb")
-    ).length;
-
-    const totalVerticalDistance = verticalDropsCount * verticalDropPerSwitch;
-    const totalLength = totalHorizontalDistance + totalVerticalDistance;
-    
-    // Tambahkan 10% untuk toleransi lekukan kabel (safety factor)
-    setCalculatedCableLength(Math.ceil(totalLength * 1.1));
-  }, [scalePerPercent, detections, ceilingHeightInput, switchHeightInput]);
-
-  const handleImageClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!isCalibrating || !imageContainerRef.current) return;
-    const rect = imageContainerRef.current.getBoundingClientRect();
-    const x = ((e.clientX - rect.left) / rect.width) * 100;
-    const y = ((e.clientY - rect.top) / rect.height) * 100;
-
-    if (!calibrationStart) {
-      setCalibrationStart({ x, y });
-      setCalibrationEnd(null);
-    } else if (!calibrationEnd) {
-      setCalibrationEnd({ x, y });
-      setIsCalibrating(false);
-      
-      // Hitung jarak Euclidean dalam persentase koordinat
-      const dx = x - calibrationStart.x;
-      const dy = y - calibrationStart.y;
-      const distPercent = Math.sqrt(dx * dx + dy * dy);
-      const manualMeters = parseFloat(manualLengthInput) || 1.0;
-      if (distPercent > 0) {
-        setScalePerPercent(manualMeters / distPercent);
-      }
-    }
-  };
-
-  const handleAddCableToRAB = () => {
-    if (!calculatedCableLength || !cableComponentId) return;
-    const cableComp = catalogComponents.find(c => c.id === cableComponentId);
-    if (!cableComp) return;
-
-    const cablePart: PartItem = {
-      id: uid(),
-      componentId: cableComp.id,
-      name: `${cableComp.name} (Hasil Kalkulasi Kalibrasi Denah)`,
-      category: cableComp.category,
-      unit: cableComp.unit || "Meter",
-      quantity: calculatedCableLength,
-      price: cableComp.price,
-    };
-
-    const existingParts = buildDetectedParts();
-
-    onConfirm([...existingParts, cablePart]);
   };
 
   const insertFeedbackReport = async (payload: Record<string, unknown>) => {
@@ -999,30 +877,9 @@ export function DetectionModal({
                     Hasil Deteksi Visual
                   </h4>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowCalibration(!showCalibration);
-                    setIsCalibrating(false);
-                    setCalibrationStart(null);
-                    setCalibrationEnd(null);
-                  }}
-                  className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-semibold transition-colors ${
-                    showCalibration
-                      ? "bg-indigo-600 text-white"
-                      : "bg-indigo-50 text-indigo-700 hover:bg-indigo-100"
-                  }`}
-                >
-                  <Ruler className="h-3.5 w-3.5" />
-                  {showCalibration ? "Tutup Kalibrasi" : "Kalibrasi Kabel"}
-                </button>
               </div>
               <div
-                ref={imageContainerRef}
-                onClick={handleImageClick}
-                className={`relative overflow-hidden rounded-xl border border-slate-200 bg-slate-900 select-none ${
-                  isCalibrating ? "cursor-crosshair ring-2 ring-indigo-500" : ""
-                }`}
+                className="relative overflow-hidden rounded-xl border border-slate-200 bg-slate-900 select-none"
                 style={{ width: '100%' }}
               >
                 {imagePreview && imagePreview !== "sample" ? (
@@ -1051,33 +908,6 @@ export function DetectionModal({
                     </span>
                   </div>
                 ))}
-
-                {/* Garis Kalibrasi & Titik Referensi */}
-                {calibrationStart && (
-                  <div
-                    className="absolute h-3 w-3 -translate-x-1.5 -translate-y-1.5 rounded-full border-2 border-white bg-indigo-500 shadow-md pointer-events-none"
-                    style={{ left: `${calibrationStart.x}%`, top: `${calibrationStart.y}%` }}
-                  />
-                )}
-                {calibrationEnd && (
-                  <div
-                    className="absolute h-3 w-3 -translate-x-1.5 -translate-y-1.5 rounded-full border-2 border-white bg-indigo-500 shadow-md pointer-events-none"
-                    style={{ left: `${calibrationEnd.x}%`, top: `${calibrationEnd.y}%` }}
-                  />
-                )}
-                {calibrationStart && calibrationEnd && (
-                  <svg className="absolute inset-0 h-full w-full pointer-events-none overflow-visible">
-                    <line
-                      x1={`${calibrationStart.x}%`}
-                      y1={`${calibrationStart.y}%`}
-                      x2={`${calibrationEnd.x}%`}
-                      y2={`${calibrationEnd.y}%`}
-                      stroke="#6366f1"
-                      strokeWidth="3"
-                      strokeDasharray="4 2"
-                    />
-                  </svg>
-                )}
               </div>
             </div>
 
@@ -1221,144 +1051,6 @@ export function DetectionModal({
               </div>
             </div>
           </div>
-
-          {/* SECTION KALIBRASI GARIS MANUAL & TINGGI PLAFON */}
-          {showCalibration && (
-            <div className="rounded-xl border border-indigo-200 bg-indigo-50/60 p-4 space-y-4 animate-scale-in">
-              <div className="flex items-center justify-between border-b border-indigo-200/80 pb-3">
-                <div className="flex items-center gap-2">
-                  <Calculator className="h-5 w-5 text-indigo-600" />
-                  <div>
-                    <h4 className="text-sm font-semibold text-indigo-900">Kalkulator Jarak Kabel Otomatis</h4>
-                    <p className="text-xs text-indigo-700">Hitung panjang kabel akurat berdasarkan kalibrasi garis manual + tinggi plafon</p>
-                  </div>
-                </div>
-                {scalePerPercent !== null && (
-                  <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-xs font-semibold text-emerald-700">
-                    ✓ Skala Terkalibrasi
-                  </span>
-                )}
-              </div>
-
-              <div className="grid gap-3 sm:grid-cols-3">
-                <div>
-                  <label className="block text-xs font-medium text-indigo-900 mb-1">
-                    1. Panjang Garis Referensi (m)
-                  </label>
-                  <div className="flex gap-2">
-                    <input
-                      type="number"
-                      step="0.1"
-                      min="0.1"
-                      value={manualLengthInput}
-                      onChange={(e) => {
-                        setManualLengthInput(e.target.value);
-                        if (calibrationStart && calibrationEnd) {
-                          const dx = calibrationEnd.x - calibrationStart.x;
-                          const dy = calibrationEnd.y - calibrationStart.y;
-                          const dist = Math.sqrt(dx * dx + dy * dy);
-                          const val = parseFloat(e.target.value) || 1.0;
-                          if (dist > 0) setScalePerPercent(val / dist);
-                        }
-                      }}
-                      placeholder="1.0"
-                      className="w-full rounded-lg border border-indigo-200 bg-white px-2.5 py-1.5 text-xs text-slate-800 outline-none focus:border-indigo-500"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsCalibrating(true);
-                        setCalibrationStart(null);
-                        setCalibrationEnd(null);
-                        setScalePerPercent(null);
-                      }}
-                      className={`whitespace-nowrap rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${
-                        isCalibrating
-                          ? "bg-amber-500 text-white animate-pulse"
-                          : "bg-indigo-600 text-white hover:bg-indigo-700"
-                      }`}
-                    >
-                      {isCalibrating ? "Klik 2 Titik..." : "📐 Tarik Garis"}
-                    </button>
-                  </div>
-                  <p className="mt-1 text-[10px] text-indigo-600">
-                    Klik tombol di atas, lalu klik 2 titik (misal ujung pintu) pada gambar.
-                  </p>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-medium text-indigo-900 mb-1">
-                    2. Tinggi Plafon (m)
-                  </label>
-                  <input
-                    type="number"
-                    step="0.1"
-                    min="2.0"
-                    value={ceilingHeightInput}
-                    onChange={(e) => setCeilingHeightInput(e.target.value)}
-                    placeholder="3.0"
-                    className="w-full rounded-lg border border-indigo-200 bg-white px-2.5 py-1.5 text-xs text-slate-800 outline-none focus:border-indigo-500"
-                  />
-                  <p className="mt-1 text-[10px] text-indigo-600">
-                    Untuk hitung kabel turun ke dinding.
-                  </p>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-medium text-indigo-900 mb-1">
-                    3. Tinggi Saklar/Panel (m)
-                  </label>
-                  <input
-                    type="number"
-                    step="0.1"
-                    min="0.5"
-                    value={switchHeightInput}
-                    onChange={(e) => setSwitchHeightInput(e.target.value)}
-                    placeholder="1.5"
-                    className="w-full rounded-lg border border-indigo-200 bg-white px-2.5 py-1.5 text-xs text-slate-800 outline-none focus:border-indigo-500"
-                  />
-                  <p className="mt-1 text-[10px] text-indigo-600">
-                    Standar ketinggian saklar/panel.
-                  </p>
-                </div>
-              </div>
-
-              {calculatedCableLength !== null && (
-                <div className="mt-2 flex flex-col gap-3 rounded-xl border border-indigo-200 bg-white p-3 sm:flex-row sm:items-center sm:justify-between">
-                  <div>
-                    <div className="text-xs font-semibold text-slate-500">Estimasi Kebutuhan Kabel:</div>
-                    <div className="text-lg font-bold text-indigo-600">
-                      {calculatedCableLength} Meter{" "}
-                      <span className="text-xs font-normal text-slate-500">(Termasuk +10% Toleransi Lekukan)</span>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <select
-                      value={cableComponentId}
-                      onChange={(e) => setCableComponentId(e.target.value)}
-                      className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-medium text-slate-700 outline-none focus:border-indigo-500 max-w-[180px]"
-                    >
-                      <option value="">Pilih Kabel di Katalog...</option>
-                      {cableComponents.map((c) => (
-                        <option key={c.id} value={c.id}>
-                          {c.name} ({formatRupiah(c.price)}/{c.unit})
-                        </option>
-                      ))}
-                    </select>
-                    <button
-                      type="button"
-                      disabled={!cableComponentId || !calculatedCableLength}
-                      onClick={handleAddCableToRAB}
-                      className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-indigo-700 disabled:opacity-50"
-                    >
-                      <Plus className="h-3.5 w-3.5" />
-                      Tambah + Kabel ke RAB
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
 
           <div className="space-y-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
             <div className="flex items-center gap-2 text-sm font-medium text-slate-700">

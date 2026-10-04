@@ -5,7 +5,7 @@ import {
   Trash2, UserRound, X, Zap,
 } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import type { Floor, ProjectState, StepId } from './types';
+import type { Floor, PartCategory, ProjectState, StepId } from './types';
 import { uid } from './data';
 import { Stepper } from './components/Stepper';
 import { ProjectStep } from './components/ProjectStep';
@@ -21,8 +21,10 @@ import { UserReportsWorkspace } from './components/UserReportsWorkspace';
 import { WorkspaceDashboard } from './components/WorkspaceDashboard';
 import { useAuth } from './lib/auth';
 import { useProjectStorage, type ProjectData, type SavedProject } from './lib/useProjectStorage';
+import { ComponentsFlyout, ProjectsFlyout, ReportsFlyout } from './components/SidebarFlyout';
 
 type WorkspaceView = 'dashboard' | 'projects' | 'editor' | 'components' | 'reports';
+type FlyoutName = 'projects' | 'components' | 'reports';
 const STEP_ORDER: StepId[] = ['project', 'components', 'summary'];
 
 function createInitialProject(): ProjectState {
@@ -47,7 +49,62 @@ export default function App() {
   const [authRequested, setAuthRequested] = useState(false);
   const [view, setView] = useState<WorkspaceView>('dashboard');
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try {
+      return window.localStorage.getItem('voltrab.sidebarCollapsed') === '1';
+    } catch {
+      return false;
+    }
+  });
+
+  // Simpan status sidebar dan sediakan pintasan Ctrl+B / Cmd+B seperti pola shadcn/ui
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('voltrab.sidebarCollapsed', sidebarCollapsed ? '1' : '0');
+    } catch {
+      // penyimpanan peramban tidak tersedia
+    }
+  }, [sidebarCollapsed]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'b') return;
+      const target = event.target as HTMLElement | null;
+      if (target && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))) return;
+      event.preventDefault();
+      setSidebarCollapsed((current) => !current);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
+  // Panel samping (flyout) seperti Roboflow: terbuka saat kursor di atas menu, tertutup dengan jeda singkat
+  const [flyout, setFlyout] = useState<FlyoutName | null>(null);
+  // Permintaan dari panel samping ke halaman tujuan; nonce membuat pilihan yang sama dapat diulang
+  const [componentsRequest, setComponentsRequest] = useState<{ category: PartCategory | 'all'; nonce: number; openForm?: boolean }>();
+  const [reportRequest, setReportRequest] = useState<{ id: string; nonce: number }>();
+  const flyoutTimerRef = useRef<number | null>(null);
+  const clearFlyoutTimer = () => {
+    if (flyoutTimerRef.current !== null) window.clearTimeout(flyoutTimerRef.current);
+    flyoutTimerRef.current = null;
+  };
+  const openFlyout = (name: FlyoutName) => {
+    // Hanya di perangkat berkursor dengan layar lebar; di HP menu tetap langsung berpindah halaman
+    if (!window.matchMedia('(hover: hover) and (min-width: 901px)').matches) return;
+    clearFlyoutTimer();
+    setFlyout(name);
+  };
+  const closeFlyoutSoon = () => {
+    clearFlyoutTimer();
+    flyoutTimerRef.current = window.setTimeout(() => setFlyout(null), 180);
+  };
+  const closeFlyoutNow = () => {
+    clearFlyoutTimer();
+    setFlyout(null);
+  };
+  useEffect(() => () => {
+    if (flyoutTimerRef.current !== null) window.clearTimeout(flyoutTimerRef.current);
+  }, []);
   const [profileOpen, setProfileOpen] = useState(false);
   const [step, setStep] = useState<StepId>('project');
   const [completed, setCompleted] = useState<Set<StepId>>(new Set());
@@ -249,7 +306,7 @@ export default function App() {
   }
 
   return (
-    <div id="app" className={`view app-view active ${sidebarCollapsed ? 'sidebar-is-collapsed' : ''}`}>
+    <div id="app" className={`view app-view active ${sidebarCollapsed ? 'sidebar-is-collapsed' : ''} ${flyout ? 'sidebar-flyout-open' : ''}`}>
       {sidebarOpen && <button className="mobile-sidebar-backdrop" type="button" aria-label="Tutup sidebar" onClick={() => setSidebarOpen(false)} />}
       <aside className={`sidebar ${sidebarOpen ? 'mobile-open' : ''} ${sidebarCollapsed ? 'collapsed' : ''}`}>
         <div className="sidebar-brand-row">
@@ -258,14 +315,56 @@ export default function App() {
         </div>
         <div className="workspace-label">WORKSPACE</div>
         <nav>
-          <button className={`side-link ${view === 'dashboard' ? 'active' : ''}`} type="button" onClick={() => switchView('dashboard')}><span><LayoutDashboard /></span><em>Dashboard</em></button>
-          <button className={`side-link ${view === 'projects' || view === 'editor' ? 'active' : ''}`} type="button" onClick={() => switchView('projects')}><span><FolderOpen /></span><em>Proyek Saya</em><b>{storage.savedProjects.length}</b></button>
-          <button className={`side-link ${view === 'components' ? 'active' : ''}`} type="button" onClick={() => switchView('components')}><span><Boxes /></span><em>Daftar Komponen</em></button>
+          <button className={`side-link ${view === 'dashboard' ? 'active' : ''}`} type="button" data-tooltip="Dashboard" aria-label="Dashboard" onMouseEnter={closeFlyoutNow} onClick={() => switchView('dashboard')}><span><LayoutDashboard /></span><em>Dashboard</em></button>
+          <button className={`side-link ${view === 'projects' || view === 'editor' ? 'active' : ''} ${flyout === 'projects' ? 'flyout-active' : ''}`} type="button" data-tooltip="Proyek Saya" aria-label="Proyek Saya" aria-haspopup="true" aria-expanded={flyout === 'projects'} onMouseEnter={() => openFlyout('projects')} onMouseLeave={closeFlyoutSoon} onClick={() => { closeFlyoutNow(); void switchView('projects'); }}><span><FolderOpen /></span><em>Proyek Saya</em><b>{storage.savedProjects.length}</b></button>
+          <button className={`side-link ${view === 'components' ? 'active' : ''} ${flyout === 'components' ? 'flyout-active' : ''}`} type="button" data-tooltip="Daftar Komponen" aria-label="Daftar Komponen" aria-haspopup="true" aria-expanded={flyout === 'components'} onMouseEnter={() => openFlyout('components')} onMouseLeave={closeFlyoutSoon} onClick={() => { closeFlyoutNow(); setComponentsRequest(undefined); void switchView('components'); }}><span><Boxes /></span><em>Daftar Komponen</em></button>
           <div className="workspace-label">LAINNYA</div>
-          <button className={`side-link ${view === 'reports' ? 'active' : ''}`} type="button" onClick={() => switchView('reports')}><span><FileSpreadsheet /></span><em>Laporan</em></button>
+          <button className={`side-link ${view === 'reports' ? 'active' : ''} ${flyout === 'reports' ? 'flyout-active' : ''}`} type="button" data-tooltip="Laporan" aria-label="Laporan" aria-haspopup="true" aria-expanded={flyout === 'reports'} onMouseEnter={() => openFlyout('reports')} onMouseLeave={closeFlyoutSoon} onClick={() => { closeFlyoutNow(); setReportRequest(undefined); void switchView('reports'); }}><span><FileSpreadsheet /></span><em>Laporan</em></button>
         </nav>
-        <button className="collapse" type="button" onClick={() => setSidebarCollapsed((current) => !current)}><PanelLeftClose /><span>{sidebarCollapsed ? 'Buka sidebar' : 'Tutup sidebar'}</span></button>
+        <button className="collapse" type="button" data-tooltip="Buka sidebar (Ctrl+B)" aria-expanded={!sidebarCollapsed} aria-label={sidebarCollapsed ? 'Buka sidebar' : 'Tutup sidebar'} onClick={() => setSidebarCollapsed((current) => !current)}><PanelLeftClose /><span>{sidebarCollapsed ? 'Buka sidebar' : 'Tutup sidebar'}</span></button>
       </aside>
+
+      <ProjectsFlyout
+        open={flyout === 'projects'}
+        projects={storage.savedProjects}
+        activeProjectId={currentProjectId}
+        onNew={() => { closeFlyoutNow(); void startNewProject(); }}
+        onOpen={(saved) => { closeFlyoutNow(); void openProject(saved); }}
+        onViewAll={() => { closeFlyoutNow(); void switchView('projects'); }}
+        onMouseEnter={() => openFlyout('projects')}
+        onMouseLeave={closeFlyoutSoon}
+      />
+      <ComponentsFlyout
+        open={flyout === 'components'}
+        onSelectCategory={(category) => {
+          closeFlyoutNow();
+          setComponentsRequest({ category, nonce: Date.now() });
+          void switchView('components');
+        }}
+        onAddComponent={() => {
+          closeFlyoutNow();
+          setComponentsRequest({ category: 'all', nonce: Date.now(), openForm: true });
+          void switchView('components');
+        }}
+        onMouseEnter={() => openFlyout('components')}
+        onMouseLeave={closeFlyoutSoon}
+      />
+      <ReportsFlyout
+        open={flyout === 'reports'}
+        userId={user.id}
+        onOpenReport={(id) => {
+          closeFlyoutNow();
+          setReportRequest({ id, nonce: Date.now() });
+          void switchView('reports');
+        }}
+        onViewAll={() => {
+          closeFlyoutNow();
+          setReportRequest(undefined);
+          void switchView('reports');
+        }}
+        onMouseEnter={() => openFlyout('reports')}
+        onMouseLeave={closeFlyoutSoon}
+      />
 
       <div className="app-main">
         <header className="app-nav">
@@ -297,8 +396,8 @@ export default function App() {
             </section>
           </main>
         )}
-        {view === 'components' && <main className="components-workspace workspace-content-page"><div className="workspace-page-heading"><span className="workspace-kicker">KATALOG REFERENSI</span><h1>Daftar Komponen</h1><p>Kelola komponen pekerjaan dan detail analisis harga satuan yang digunakan dalam proyek.</p></div><section className="manager-surface"><ComponentsManager /></section></main>}
-        {view === 'reports' && <UserReportsWorkspace userId={user.id} />}
+        {view === 'components' && <main className="components-workspace workspace-content-page"><div className="workspace-page-heading"><span className="workspace-kicker">KATALOG REFERENSI</span><h1>Daftar Komponen</h1><p>Kelola komponen pekerjaan dan detail analisis harga satuan yang digunakan dalam proyek.</p></div><section className="manager-surface"><ComponentsManager categoryRequest={componentsRequest} /></section></main>}
+        {view === 'reports' && <UserReportsWorkspace userId={user.id} highlightRequest={reportRequest} />}
       </div>
 
       <Modal open={pendingDeleteProject !== null} onClose={() => { if (!deletingProject) { setPendingDeleteProject(null); setDeleteProjectError(null); } }} title="Hapus proyek?" subtitle="Tindakan ini tidak dapat dibatalkan.">

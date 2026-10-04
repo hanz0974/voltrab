@@ -1,4 +1,5 @@
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
+import type { MouseEvent as ReactMouseEvent } from "react";
 import { subscribeToActiveComponents } from '../lib/componentCatalog';
 import {
   Plus,
@@ -12,6 +13,7 @@ import {
   Image as ImageIcon,
   Loader2,
   Building2,
+  Ruler,
 } from "lucide-react";
 import type {
   Floor,
@@ -24,6 +26,7 @@ import { CATEGORY_COLORS, formatRupiah, uid } from "../data";
 import { CategoryBadge } from "./CategoryBadge";
 import { Modal } from "./Modal";
 import { DetectionModal } from "./DetectionModal";
+import { CABLE_PART_SUFFIX, CableOverlay, CablePanel, useCableRouting } from "./CableRouting";
 import { supabase } from "../lib/supabase";
 import { getBiayaUmumKoef } from "../lib/biayaUmumSetting";
 
@@ -365,6 +368,42 @@ export function ComponentsStep({
     currentRoom?.parts.reduce((s, p) => s + p.quantity * p.price, 0) ?? 0;
   const detectionImage = currentRoom?.detectionImage;
   const detectionResults = currentRoom?.detections ?? [];
+
+  // --- JALUR KABEL PADA GAMBAR DENAH RUANGAN (detail di CableRouting.tsx) ---
+  const cableComponents = catalogComponents.filter(
+    (component) => component.category.toLowerCase() === "kabel",
+  );
+  const cable = useCableRouting(detectionResults, cableComponents);
+  const [cableOpen, setCableOpen] = useState(false);
+  const cableImageRef = useRef<HTMLDivElement>(null);
+
+  // Jalur kabel berlaku untuk satu gambar denah; pindah ruangan atau mengganti gambar memulai dari awal.
+  useEffect(() => {
+    cable.reset();
+    setCableOpen(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentRoom?.id, detectionImage]);
+
+  const handleCableImageClick = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (!cableOpen || !cableImageRef.current) return;
+    const rect = cableImageRef.current.getBoundingClientRect();
+    cable.handleImageClick(
+      {
+        x: ((event.clientX - rect.left) / rect.width) * 100,
+        y: ((event.clientY - rect.top) / rect.height) * 100,
+      },
+      { width: rect.width, height: rect.height },
+    );
+  };
+
+  /** Hasil jalur kabel menggantikan hasil jalur kabel sebelumnya pada ruangan ini. */
+  const handleSaveCableParts = () => {
+    if (!activeRoom || !currentRoom) return;
+    const cableParts = cable.buildParts(catalogComponents);
+    if (cableParts.length === 0) return;
+    const otherParts = currentRoom.parts.filter((part) => !part.name.endsWith(CABLE_PART_SUFFIX));
+    updateRoom(activeRoom.floorId, activeRoom.roomId, { parts: [...otherParts, ...cableParts] });
+  };
 
   const openDetailViewer = async (part: PartItem) => {
     setDetailViewerPartName(part.name);
@@ -761,23 +800,52 @@ export function ComponentsStep({
                           </div>
                         </div>
                         {detectionImage && (
-                          <button
-                            type="button"
-                            className="rounded-full border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-medium text-rose-700 transition-colors hover:bg-rose-100"
-                            onClick={() => setConfirmDeleteImageOpen(true)}
-                          >
-                            Hapus
-                          </button>
+                          <div className="flex items-center gap-2">
+                            {detectionResults.length > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setCableOpen(!cableOpen);
+                                  cable.cancelActiveMode();
+                                }}
+                                className={`inline-flex items-center gap-1.5 rounded-full px-3 py-2 text-sm font-medium transition-colors ${
+                                  cableOpen
+                                    ? "bg-indigo-600 text-white hover:bg-indigo-700"
+                                    : "border border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100"
+                                }`}
+                              >
+                                <Ruler className="h-4 w-4" />
+                                {cableOpen ? "Tutup Jalur Kabel" : "Jalur Kabel"}
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              className="rounded-full border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-medium text-rose-700 transition-colors hover:bg-rose-100"
+                              onClick={() => setConfirmDeleteImageOpen(true)}
+                            >
+                              Hapus
+                            </button>
+                          </div>
                         )}
                       </div>
                       <div
-                        className="relative overflow-hidden rounded-2xl bg-slate-50"
-                        style={{ width: "100%", minHeight: 260 }}
+                        ref={cableImageRef}
+                        onClick={handleCableImageClick}
+                        className={`relative overflow-hidden rounded-2xl bg-slate-50 select-none ${
+                          cableOpen && cable.mode !== "idle" ? "cursor-crosshair ring-2 ring-indigo-500" : ""
+                        }`}
+                        style={{ width: "100%", minHeight: detectionImage ? undefined : 260 }}
                       >
                         {detectionImage ? (
                           <img
                             src={detectionImage}
                             alt="Hasil deteksi denah"
+                            onLoad={(event) =>
+                              cable.setImageSize({
+                                width: event.currentTarget.naturalWidth,
+                                height: event.currentTarget.naturalHeight,
+                              })
+                            }
                             className="block w-full"
                             style={{ height: "auto" }}
                           />
@@ -810,7 +878,17 @@ export function ComponentsStep({
                             </span>
                           </div>
                         ))}
+                        {cableOpen && <CableOverlay cable={cable} />}
                       </div>
+                      {cableOpen && detectionImage && (
+                        <div className="mt-3">
+                          <CablePanel
+                            cable={cable}
+                            cableComponents={cableComponents}
+                            onAddToRab={handleSaveCableParts}
+                          />
+                        </div>
+                      )}
                     </div>
                   </div>
                   <div className="card-base my-5 min-w-0 overflow-hidden">

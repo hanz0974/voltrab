@@ -15,6 +15,71 @@ import {
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 
+interface UploadProgress {
+  loaded: number;
+  total: number;
+  startedAt: number;
+}
+
+const UPLOAD_CANCELLED = 'Upload dibatalkan.';
+
+const formatBytes = (bytes: number) =>
+  bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.round(bytes / 1024)} KB`;
+
+const formatDuration = (seconds: number) => {
+  if (!Number.isFinite(seconds) || seconds < 0) return '-';
+  const minutes = Math.floor(seconds / 60);
+  const rest = Math.round(seconds % 60);
+  return minutes > 0 ? `${minutes} menit ${rest} detik` : `${rest} detik`;
+};
+
+// supabase-js tidak menyediakan progres unggah, sehingga berkas dikirim langsung ke
+// REST API Supabase Storage memakai XMLHttpRequest agar progresnya dapat ditampilkan.
+// Bucket, token login, dan aturan akses yang dipakai sama dengan supabase.storage.upload().
+const uploadModelFile = (
+  path: string,
+  file: File,
+  accessToken: string,
+  onProgress: (loaded: number, total: number) => void,
+  xhrRef: { current: XMLHttpRequest | null },
+) =>
+  new Promise<void>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhrRef.current = xhr;
+    xhr.open('POST', `${import.meta.env.VITE_SUPABASE_URL}/storage/v1/object/yolo-models/${path}`);
+    xhr.setRequestHeader('Authorization', `Bearer ${accessToken}`);
+    xhr.setRequestHeader('apikey', import.meta.env.VITE_SUPABASE_ANON_KEY as string);
+    xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+    xhr.setRequestHeader('x-upsert', 'false');
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) onProgress(event.loaded, event.total);
+    };
+    xhr.onload = () => {
+      xhrRef.current = null;
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve();
+        return;
+      }
+      let message = `Upload gagal (HTTP ${xhr.status})`;
+      try {
+        const body = JSON.parse(xhr.responseText);
+        message = body.message || body.error || message;
+      } catch {
+        // respons bukan JSON
+      }
+      reject(new Error(message));
+    };
+    xhr.onerror = () => {
+      xhrRef.current = null;
+      reject(new Error('Koneksi terputus saat mengunggah model.'));
+    };
+    xhr.onabort = () => {
+      xhrRef.current = null;
+      reject(new Error(UPLOAD_CANCELLED));
+    };
+    xhr.send(file);
+  });
+
 interface YoloModel {
   id: string;
   name: string;
@@ -64,6 +129,8 @@ export function ModelsManager() {
   const [models, setModels] = useState<YoloModel[]>([]);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
+  const [progress, setProgress] = useState<UploadProgress | null>(null);
+  const uploadXhrRef = useRef<XMLHttpRequest | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({
     name: '',
@@ -265,15 +332,22 @@ export function ModelsManager() {
       const fileName = `${Date.now()}-${Math.random().toString(36).slice(2)}.${fileExt}`;
       const filePath = `models/${fileName}`;
 
-      const { error: uploadError } = await supabase.storage
-        .from('yolo-models')
-        .upload(filePath, selectedFile, {
-          contentType: 'application/octet-stream',
-          upsert: false,
-        });
+      const { data: sessionData } = await supabase.auth.getSession();
+      const accessToken = sessionData.session?.access_token;
+      if (!accessToken) throw new Error('Sesi login berakhir. Silakan masuk kembali.');
 
-      if (uploadError) {
-        if (uploadError.message.includes('Bucket not found')) {
+      const startedAt = Date.now();
+      setProgress({ loaded: 0, total: selectedFile.size, startedAt });
+      try {
+        await uploadModelFile(
+          filePath,
+          selectedFile,
+          accessToken,
+          (loaded, total) => setProgress({ loaded, total, startedAt }),
+          uploadXhrRef,
+        );
+      } catch (uploadError) {
+        if (uploadError instanceof Error && uploadError.message.includes('Bucket not found')) {
           throw new Error('Storage bucket belum dikonfigurasi. Silakan hubungi administrator.');
         }
         throw uploadError;
@@ -303,9 +377,11 @@ export function ModelsManager() {
       await fetchModels();
       closeForm();
     } catch (err) {
+      if (err instanceof Error && err.message === UPLOAD_CANCELLED) return;
       setError(err instanceof Error ? err.message : 'Gagal mengupload model');
     } finally {
       setUploading(false);
+      setProgress(null);
     }
   };
 
@@ -336,6 +412,8 @@ export function ModelsManager() {
   };
 
   const closeForm = () => {
+    // Menutup form saat unggahan berjalan sekaligus membatalkan unggahan tersebut
+    uploadXhrRef.current?.abort();
     setShowForm(false);
     setSelectedFile(null);
     setForm({ name: '', description: '', version: '' });
@@ -767,6 +845,31 @@ export function ModelsManager() {
                 />
               </div>
             </div>
+
+            {uploading && progress && (() => {
+              const percent = Math.min(100, (progress.loaded / Math.max(progress.total, 1)) * 100);
+              const seconds = (Date.now() - progress.startedAt) / 1000;
+              const speed = seconds > 0 ? progress.loaded / seconds : 0;
+              const remaining = speed > 0 ? (progress.total - progress.loaded) / speed : Number.NaN;
+              return (
+                <div className="mt-5 rounded-lg border border-slate-200 bg-slate-50 p-3">
+                  <div className="mb-1.5 flex items-center justify-between text-xs font-medium text-slate-700">
+                    <span>{percent < 100 ? 'Mengunggah model...' : 'Menyimpan dan mengaktifkan model...'}</span>
+                    <span>{Math.floor(percent)}%</span>
+                  </div>
+                  <div className="h-2 w-full overflow-hidden rounded-full bg-slate-200">
+                    <div
+                      className="h-full rounded-full bg-brand-600 transition-[width] duration-200 ease-out"
+                      style={{ width: `${percent}%` }}
+                    />
+                  </div>
+                  <p className="mt-1.5 text-xs text-slate-500">
+                    {formatBytes(progress.loaded)} dari {formatBytes(progress.total)}
+                    {speed > 0 && percent < 100 && ` · ${formatBytes(speed)}/detik · sisa sekitar ${formatDuration(remaining)}`}
+                  </p>
+                </div>
+              );
+            })()}
 
             <div className="mt-6 flex justify-end gap-3">
               <button

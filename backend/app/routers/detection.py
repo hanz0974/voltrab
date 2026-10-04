@@ -20,22 +20,14 @@ from app.models.schemas import DetectionResponse, DetectionResultItem
 
 router = APIRouter(prefix="/detect", tags=["detection"])
 
-# --- DAFTAR KELAS & MAPPING BARU ---
-# Sesuai dengan yang ada di script lokal kamu
-CLASSES = [
-    'RMDL PL-C 13W', 'exit lamp', 'local switch 1 way 1 gang', 'local switch 2 way 1 gang', 'fitting', 'stage lamp gms light 1xtl5 14W'
-]
+# --- DAFTAR KELAS ---
+# Nama kelas utama dibaca dari metadata ONNX (_read_onnx_class_names).
+# Daftar ini hanya cadangan bila metadata tidak tersedia, dengan urutan sesuai model 4 kelas penelitian.
+CLASSES = ['saklar ganda', 'saklar tunggal', 'stop kontak', 'titik lampu']
 
-# Sesuaikan value (komponen id) ini dengan yang ada di database katalogmu
-LABEL_TO_COMPONENT = {
-    "exit lamp": "c-exit-lamp",
-    "local switch 1 way 1 gang": "c-switch-1w1g",
-    "local switch 2 way 1 gang": "c-switch-2w1g",
-    "reflector and louvre m5": "c-reflector-m5",
-    "RMDL PL-C 13W": "c-rmdl-plc",
-    "stage lamp gms light 1xtl5 14W": "c-stage-lamp",
-    "fitting" : "c-fitting",
-}
+# Pemasangan objek dengan komponen katalog dilakukan pengguna pada tahap koreksi di frontend,
+# karena id katalog berbeda pada setiap pengguna. Karena itu tidak ada pemetaan id baku per kelas.
+LABEL_TO_COMPONENT: dict[str, str] = {}
 
 from app.core.config import SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
 
