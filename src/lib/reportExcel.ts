@@ -34,7 +34,7 @@ export async function downloadRabReportExcel(report: RabReport): Promise<void> {
   const componentIds = [...new Set(components.map((component) => component.componentId).filter(Boolean))];
   const [{ data, error: detailError }, biayaUmumKoef] = await Promise.all([
     componentIds.length
-      ? supabase.from('detail_komponen').select('component_id, jenis, uraian, satuan, koefisien, harga_satuan, jumlah_harga').in('component_id', componentIds).order('created_at', { ascending: true })
+      ? supabase.from('component_detail_view').select('component_id, jenis, uraian, satuan, koefisien, harga_satuan, jumlah_harga').in('component_id', componentIds).order('created_at', { ascending: true })
       : Promise.resolve({ data: [], error: null }),
     getBiayaUmumKoef(),
   ]);

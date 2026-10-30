@@ -1,6 +1,7 @@
 import { supabase } from './supabase';
 import type { ComponentSpec } from '../types';
 import { getBiayaUmumKoef, isHiddenSettingComponentId } from './biayaUmumSetting';
+import { readAllRows } from './readAllRows';
 
 let activeChannel: ReturnType<typeof supabase.channel> | null = null;
 
@@ -15,19 +16,23 @@ const parseNumber = (value: number | string): number => {
 };
 
 export async function fetchActiveComponents(): Promise<ComponentSpec[]> {
-  const [{ data: componentsData, error: componentsError }, { data: detailRows }, biayaUmumKoef] = await Promise.all([
-    supabase
+  const [componentsData, detailRows, biayaUmumKoef] = await Promise.all([
+    readAllRows<ComponentSpec>((from, to) => supabase
       .from('components')
-      .select('id, name, category, unit, price')
+      .select('id, name, category, unit, price', { count: 'exact' })
       .order('category')
-      .order('name'),
-    supabase.from('detail_komponen').select('component_id, jumlah_harga'),
+      .order('name')
+      .order('id')
+      .range(from, to)),
+    // Both keys form a stable order; a single request can truncate the AHSP rows.
+    readAllRows<DetailKomponenPriceRow>((from, to) => supabase
+      .from('component_detail_view')
+      .select('component_id, jumlah_harga', { count: 'exact' })
+      .order('component_id')
+      .order('id')
+      .range(from, to)),
     getBiayaUmumKoef(),
   ]);
-
-  if (componentsError) {
-    throw componentsError;
-  }
 
   const dTotalByComponent = new Map<string, number>();
   for (const row of (detailRows ?? []) as DetailKomponenPriceRow[]) {
@@ -91,7 +96,14 @@ export function subscribeToActiveComponents(onChange: (components: ComponentSpec
     )
     .on(
       'postgres_changes',
-      { event: '*', schema: 'public', table: 'detail_komponen' },
+      { event: '*', schema: 'public', table: 'component_details' },
+      () => {
+        void load();
+      },
+    )
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'resources' },
       () => {
         void load();
       },

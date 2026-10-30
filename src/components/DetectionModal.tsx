@@ -92,6 +92,10 @@ export function DetectionModal({
   const [annotationStart, setAnnotationStart] = useState<{ x: number; y: number } | null>(null);
   const [annotationDraft, setAnnotationDraft] = useState<TrainingAnnotation["bbox"] | null>(null);
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
+  // Sorotan hasil deteksi: kartu di daftar <-> kotak di gambar
+  const [focusedDetectionId, setFocusedDetectionId] = useState<string | null>(null);
+  const detectionBoxRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const detectionCardRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const annotationImageRef = useRef<HTMLDivElement>(null);
 
   const fileRef = useRef<HTMLInputElement>(null);
@@ -386,6 +390,7 @@ export function DetectionModal({
         setImagePreview(finalImage);
       }
       setDetections(results);
+      setFocusedDetectionId(null);
       setStage("done");
       onComplete(finalImage, results);
     } catch (error) {
@@ -532,7 +537,14 @@ export function DetectionModal({
     );
   };
 
+  const focusDetection = (id: string, scrollTarget: "box" | "card") => {
+    setFocusedDetectionId(id);
+    const el = scrollTarget === "box" ? detectionBoxRefs.current[id] : detectionCardRefs.current[id];
+    el?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+  };
+
   const removeDetection = (id: string) => {
+    setFocusedDetectionId((current) => (current === id ? null : current));
     setDetections((prev) => prev.filter((d) => d.id !== id));
     setDetectionSearches((current) => {
       const next = { ...current };
@@ -881,6 +893,10 @@ export function DetectionModal({
               <div
                 className="relative overflow-hidden rounded-xl border border-slate-200 bg-slate-900 select-none"
                 style={{ width: '100%' }}
+                onClick={(event) => {
+                  // Klik area kosong gambar menghapus sorotan
+                  if (event.target === event.currentTarget) setFocusedDetectionId(null);
+                }}
               >
                 {imagePreview && imagePreview !== "sample" ? (
                   <img
@@ -892,22 +908,50 @@ export function DetectionModal({
                 ) : (
                   <SampleSLD />
                 )}
-                {detections.map((d, idx) => (
-                  <div
-                    key={d.id}
-                    className="absolute border-2 border-brand-400 bg-brand-400/10 pointer-events-none"
-                    style={{
-                      left: `${d.bbox.x}%`,
-                      top: `${d.bbox.y}%`,
-                      width: `${d.bbox.width}%`,
-                      height: `${d.bbox.height}%`,
-                    }}
-                  >
-                    <span className="absolute -top-5 left-0 whitespace-nowrap rounded bg-brand-600 px-1.5 py-0.5 text-[10px] font-semibold text-white">
-                      {idx + 1}. {d.label} ({(d.confidence * 100).toFixed(0)}%)
-                    </span>
-                  </div>
-                ))}
+                {detections.map((d, idx) => {
+                  const isFocused = focusedDetectionId === d.id;
+                  const isDimmed = focusedDetectionId !== null && !isFocused;
+                  return (
+                    <div
+                      key={d.id}
+                      ref={(el) => {
+                        detectionBoxRefs.current[d.id] = el;
+                      }}
+                      role="button"
+                      tabIndex={0}
+                      aria-label={`Hasil deteksi nomor ${idx + 1}: ${d.label}`}
+                      title={`${idx + 1}. ${d.label} (${(d.confidence * 100).toFixed(0)}%)`}
+                      onClick={() => focusDetection(d.id, "card")}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          focusDetection(d.id, "card");
+                        }
+                      }}
+                      className={`absolute cursor-pointer transition-all duration-150 ${
+                        isFocused
+                          ? "z-20 border-[3px] border-amber-400 bg-amber-300/30 shadow-[0_0_0_3px_rgba(251,191,36,0.45)]"
+                          : `z-10 border-2 border-brand-400 bg-brand-400/10 ${isDimmed ? "opacity-40" : ""}`
+                      }`}
+                      style={{
+                        left: `${d.bbox.x}%`,
+                        top: `${d.bbox.y}%`,
+                        width: `${d.bbox.width}%`,
+                        height: `${d.bbox.height}%`,
+                      }}
+                    >
+                      <span
+                        className={`pointer-events-none absolute left-0 min-w-[16px] rounded px-1 text-center text-[10px] font-bold leading-4 text-white ${
+                          d.bbox.y < 4 ? "top-0" : "-top-4"
+                        } ${
+                          isFocused ? "bg-amber-500" : "bg-brand-600"
+                        }`}
+                      >
+                        {idx + 1}
+                      </span>
+                    </div>
+                  );
+                })}
               </div>
             </div>
 
@@ -946,7 +990,15 @@ export function DetectionModal({
                   return (
                     <div
                       key={d.id}
-                      className="rounded-xl border border-slate-200 bg-white p-3 animate-scale-in"
+                      ref={(el) => {
+                        detectionCardRefs.current[d.id] = el;
+                      }}
+                      onClick={() => focusDetection(d.id, "box")}
+                      className={`cursor-pointer rounded-xl border bg-white p-3 animate-scale-in transition-shadow ${
+                        focusedDetectionId === d.id
+                          ? "border-amber-300 ring-2 ring-amber-400"
+                          : "border-slate-200 hover:border-brand-200"
+                      }`}
                     >
                       <div className="flex items-start justify-between gap-2">
                         <div className="flex items-center gap-2">
@@ -963,7 +1015,11 @@ export function DetectionModal({
                           </div>
                         </div>
                         <button
-                          onClick={() => removeDetection(d.id)}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            removeDetection(d.id);
+                          }}
+                          aria-label={`Hapus hasil deteksi nomor ${idx + 1}`}
                           className="rounded-md p-1 text-slate-300 hover:bg-rose-50 hover:text-rose-600"
                         >
                           <X className="h-3.5 w-3.5" />

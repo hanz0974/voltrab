@@ -105,7 +105,7 @@ export function SummaryStep({ project, floors, onBack, onEditProject, onEditComp
     const [{ data: detailData, error: detailError }, biayaUmumKoef] = await Promise.all([
       componentIds.length > 0
         ? supabase
-            .from('detail_komponen')
+            .from('component_detail_view')
             .select('id, component_id, jenis, uraian, satuan, koefisien, harga_satuan, jumlah_harga')
             .in('component_id', componentIds)
             .order('created_at', { ascending: true })

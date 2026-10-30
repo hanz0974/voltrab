@@ -423,30 +423,31 @@ export function ComponentExcelImport({ onImported }: ComponentExcelImportProps) 
         if (upsertError) throw new Error(`Gagal menyimpan komponen: ${upsertError.message}`);
       }
 
-      for (const group of chunk(components.map((component) => component.id), 100)) {
-        const { error: deleteError } = await supabase.from('detail_komponen').delete().in('component_id', group);
-        if (deleteError) throw new Error(`Gagal memperbarui detail lama: ${deleteError.message}`);
-      }
-
-      const detailRows = components.flatMap((component) =>
-        component.details.map((detail) => ({
-          user_id: userId,
-          component_id: component.id,
-          jenis: detail.jenis,
-          uraian: detail.uraian,
-          satuan: detail.satuan,
-          koefisien: detail.koefisien,
-          harga_satuan: detail.hargaSatuan,
-        })),
-      );
-
-      for (const rows of chunk(detailRows, 400)) {
-        const { error: insertError } = await supabase.from('detail_komponen').insert(rows);
-        if (insertError) throw new Error(`Gagal menyimpan detail komponen: ${insertError.message}`);
+      // Rincian AHSP disimpan ternormalisasi: sumber daya ke tabel resources (sekali per
+      // jenis+uraian+satuan+harga) dan pemakaiannya ke component_details. Fungsi
+      // replace_component_details mengganti seluruh rincian komponen pada kelompok ini.
+      let importedDetailCount = 0;
+      for (const group of chunk(components, 100)) {
+        const rows = group.flatMap((component) =>
+          component.details.map((detail) => ({
+            component_id: component.id,
+            jenis: detail.jenis,
+            uraian: detail.uraian,
+            satuan: detail.satuan,
+            koefisien: detail.koefisien,
+            harga_satuan: detail.hargaSatuan,
+          })),
+        );
+        const { error: replaceError } = await supabase.rpc('replace_component_details', {
+          p_component_ids: group.map((component) => component.id),
+          p_rows: rows,
+        });
+        if (replaceError) throw new Error(`Gagal menyimpan detail komponen: ${replaceError.message}`);
+        importedDetailCount += rows.length;
       }
 
       await onImported();
-      setSuccess(`${components.length} komponen dan ${detailRows.length} detail berhasil diimpor.`);
+      setSuccess(`${components.length} komponen dan ${importedDetailCount} detail berhasil diimpor.`);
     } catch (importError) {
       setError(importError instanceof Error ? importError.message : 'Import Excel gagal.');
     } finally {

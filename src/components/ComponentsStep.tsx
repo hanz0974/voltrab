@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from "react";
-import type { MouseEvent as ReactMouseEvent } from "react";
+import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
 import { subscribeToActiveComponents } from '../lib/componentCatalog';
 import {
   Plus,
@@ -14,6 +14,8 @@ import {
   Loader2,
   Building2,
   Ruler,
+  ZoomIn,
+  ZoomOut,
 } from "lucide-react";
 import type {
   Floor,
@@ -377,10 +379,99 @@ export function ComponentsStep({
   const [cableOpen, setCableOpen] = useState(false);
   const cableImageRef = useRef<HTMLDivElement>(null);
 
+  // --- ZOOM GAMBAR HASIL DETEKSI ---
+  // Pada zoom 100% gambar dimuat utuh (selebar panel, tinggi maksimal 60% layar, tidak diperbesar
+  // melebihi ukuran asli). Zoom memperbesar lebar gambar; area tampilan dapat digulir.
+  const MIN_ZOOM = 1;
+  const MAX_ZOOM = 5;
+  const [zoom, setZoom] = useState(1);
+  // Ukuran asli disimpan bersama src-nya agar ukuran gambar lama tidak terpakai pada gambar baru.
+  const [imgNatural, setImgNatural] = useState<{ src: string; width: number; height: number } | null>(null);
+  const [viewportWidth, setViewportWidth] = useState(0);
+  const viewportRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const el = viewportRef.current;
+    if (!el) return;
+    const update = () => setViewportWidth(el.clientWidth);
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [currentRoom?.id, detectionImage]);
+
+  const fitWidth =
+    imgNatural && imgNatural.src === detectionImage && viewportWidth > 0
+      ? Math.min(
+          viewportWidth,
+          imgNatural.width,
+          (imgNatural.width * (window.innerHeight * 0.6 - 2)) / imgNatural.height,
+        )
+      : null;
+
+  // Geser gambar (pan) dengan menahan klik kiri saat gambar diperbesar. Tidak aktif saat mode
+  // kalibrasi/gambar jalur kabel agar klik pada gambar tetap menambah titik.
+  const panRef = useRef<{ x: number; y: number; left: number; top: number; moved: boolean } | null>(null);
+  const suppressClickRef = useRef(false);
+  const [panning, setPanning] = useState(false);
+  const canPan = zoom > 1 && !(cableOpen && cable.mode !== "idle");
+
+  const handlePanStart = (event: ReactPointerEvent<HTMLDivElement>) => {
+    suppressClickRef.current = false;
+    const vp = viewportRef.current;
+    if (!canPan || !vp || event.button !== 0) return;
+    panRef.current = { x: event.clientX, y: event.clientY, left: vp.scrollLeft, top: vp.scrollTop, moved: false };
+  };
+
+  const handlePanMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const vp = viewportRef.current;
+    const pan = panRef.current;
+    if (!vp || !pan) return;
+    const dx = event.clientX - pan.x;
+    const dy = event.clientY - pan.y;
+    if (!pan.moved) {
+      if (Math.hypot(dx, dy) < 4) return; // gerakan kecil tetap dianggap klik
+      pan.moved = true;
+      setPanning(true);
+      event.currentTarget.setPointerCapture(event.pointerId);
+    }
+    vp.scrollLeft = pan.left - dx;
+    vp.scrollTop = pan.top - dy;
+  };
+
+  const handlePanEnd = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const pan = panRef.current;
+    panRef.current = null;
+    if (!pan?.moved) return;
+    suppressClickRef.current = true; // klik setelah menggeser tidak diteruskan ke gambar
+    setPanning(false);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
+
+  /** Ubah zoom sambil menjaga titik tengah area tampilan tetap di tempat. */
+  const applyZoom = (next: number) => {
+    const value = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.round(next * 100) / 100));
+    const vp = viewportRef.current;
+    if (!vp) {
+      setZoom(value);
+      return;
+    }
+    const cx = (vp.scrollLeft + vp.clientWidth / 2) / vp.scrollWidth;
+    const cy = (vp.scrollTop + vp.clientHeight / 2) / vp.scrollHeight;
+    setZoom(value);
+    requestAnimationFrame(() => {
+      vp.scrollLeft = cx * vp.scrollWidth - vp.clientWidth / 2;
+      vp.scrollTop = cy * vp.scrollHeight - vp.clientHeight / 2;
+    });
+  };
+
   // Jalur kabel berlaku untuk satu gambar denah; pindah ruangan atau mengganti gambar memulai dari awal.
   useEffect(() => {
     cable.reset();
     setCableOpen(false);
+    setZoom(1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentRoom?.id, detectionImage]);
 
@@ -412,7 +503,7 @@ export function ComponentsStep({
     setDetailViewerError(null);
 
     const { data, error } = await supabase
-      .from("detail_komponen")
+      .from("component_detail_view")
       .select("id, jenis, uraian, satuan, koefisien, harga_satuan, jumlah_harga")
       .eq("component_id", part.componentId)
       .order("created_at", { ascending: true });
@@ -801,6 +892,34 @@ export function ComponentsStep({
                         </div>
                         {detectionImage && (
                           <div className="flex items-center gap-2">
+                            <div className="inline-flex items-center rounded-full border border-slate-200 bg-white">
+                              <button
+                                type="button"
+                                title="Perkecil"
+                                onClick={() => applyZoom(zoom / 1.25)}
+                                disabled={zoom <= MIN_ZOOM}
+                                className="rounded-l-full px-2.5 py-2 text-slate-600 transition-colors hover:bg-slate-100 disabled:opacity-40"
+                              >
+                                <ZoomOut className="h-4 w-4" />
+                              </button>
+                              <button
+                                type="button"
+                                title="Kembali ke ukuran awal"
+                                onClick={() => applyZoom(1)}
+                                className="min-w-[3.25rem] px-1 py-2 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-100"
+                              >
+                                {Math.round(zoom * 100)}%
+                              </button>
+                              <button
+                                type="button"
+                                title="Perbesar"
+                                onClick={() => applyZoom(zoom * 1.25)}
+                                disabled={zoom >= MAX_ZOOM}
+                                className="rounded-r-full px-2.5 py-2 text-slate-600 transition-colors hover:bg-slate-100 disabled:opacity-40"
+                              >
+                                <ZoomIn className="h-4 w-4" />
+                              </button>
+                            </div>
                             {detectionResults.length > 0 && (
                               <button
                                 type="button"
@@ -828,26 +947,50 @@ export function ComponentsStep({
                           </div>
                         )}
                       </div>
+                      {/* Area tampilan (maks. 60% tinggi layar) dapat digulir saat zoom. Div ber-ref menyusut tepat
+                          seukuran gambar sehingga posisi bbox (%) dan klik jalur kabel tetap tepat di setiap zoom. */}
+                      <div
+                        ref={viewportRef}
+                        onPointerDown={handlePanStart}
+                        onPointerMove={handlePanMove}
+                        onPointerUp={handlePanEnd}
+                        onPointerCancel={handlePanEnd}
+                        onClickCapture={(event) => {
+                          if (!suppressClickRef.current) return;
+                          suppressClickRef.current = false;
+                          event.stopPropagation();
+                        }}
+                        className={
+                          detectionImage
+                            ? `max-h-[60vh] overflow-auto rounded-2xl bg-slate-50 ${
+                                canPan ? (panning ? "cursor-grabbing select-none" : "cursor-grab") : ""
+                              }`
+                            : ""
+                        }
+                      >
                       <div
                         ref={cableImageRef}
                         onClick={handleCableImageClick}
-                        className={`relative overflow-hidden rounded-2xl bg-slate-50 select-none ${
-                          cableOpen && cable.mode !== "idle" ? "cursor-crosshair ring-2 ring-indigo-500" : ""
-                        }`}
-                        style={{ width: "100%", minHeight: detectionImage ? undefined : 260 }}
+                        className={`relative overflow-hidden select-none ${
+                          detectionImage ? "mx-auto w-max" : "rounded-2xl bg-slate-50"
+                        } ${cableOpen && cable.mode !== "idle" ? "cursor-crosshair ring-2 ring-inset ring-indigo-500" : ""}`}
+                        style={detectionImage ? undefined : { width: "100%", minHeight: 260 }}
                       >
                         {detectionImage ? (
                           <img
                             src={detectionImage}
                             alt="Hasil deteksi denah"
-                            onLoad={(event) =>
-                              cable.setImageSize({
+                            draggable={false}
+                            onLoad={(event) => {
+                              const size = {
                                 width: event.currentTarget.naturalWidth,
                                 height: event.currentTarget.naturalHeight,
-                              })
-                            }
-                            className="block w-full"
-                            style={{ height: "auto" }}
+                              };
+                              setImgNatural({ src: detectionImage, ...size });
+                              cable.setImageSize(size);
+                            }}
+                            className={fitWidth ? "block h-auto" : "block h-auto w-auto max-w-full max-h-[60vh]"}
+                            style={fitWidth ? { width: fitWidth * zoom, maxWidth: "none" } : undefined}
                           />
                         ) : (
                           <div className="flex min-h-[220px] flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-slate-200 bg-white p-8 text-slate-400">
@@ -862,9 +1005,10 @@ export function ComponentsStep({
                             </div>
                           </div>
                         )}
-                        {detectionResults.map((d) => (
+                        {detectionResults.map((d, idx) => (
                           <div
                             key={d.id}
+                            title={`${idx + 1}. ${d.label} (${Math.round(d.confidence <= 1 ? d.confidence * 100 : d.confidence)}%)`}
                             className="absolute border-2 border-brand-400 bg-brand-400/10"
                             style={{
                               left: `${d.bbox.x}%`,
@@ -873,12 +1017,17 @@ export function ComponentsStep({
                               height: `${d.bbox.height}%`,
                             }}
                           >
-                            <span className="absolute -top-5 left-0 whitespace-nowrap rounded bg-brand-600 px-1.5 py-0.5 text-[10px] font-semibold text-white">
-                              {d.label}
+                            <span
+                              className={`absolute left-0 whitespace-nowrap rounded bg-brand-600 px-1.5 py-0.5 text-[10px] font-semibold text-white ${
+                                d.bbox.y < 4 ? "top-0" : "-top-5"
+                              }`}
+                            >
+                              {idx + 1}
                             </span>
                           </div>
                         ))}
                         {cableOpen && <CableOverlay cable={cable} />}
+                      </div>
                       </div>
                       {cableOpen && detectionImage && (
                         <div className="mt-3">

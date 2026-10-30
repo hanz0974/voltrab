@@ -27,8 +27,10 @@ interface ComponentRecord {
   updated_at: string;
 }
 
+/** Satu baris rincian AHSP dari view component_detail_view (component_details JOIN resources). */
 interface DetailKomponenRecord {
-  id: string;
+  id: string; // = resource_id; unik di dalam satu komponen
+  resource_id: string;
   component_id: string;
   jenis: 'A. Tenaga kerja' | 'B. Bahan' | 'C. Peralatan';
   uraian: string;
@@ -171,7 +173,7 @@ export function ComponentsManager({ categoryRequest }: ComponentsManagerProps = 
       const effectiveKoef = clampBiayaUmumKoef(koefValue ?? (await getBiayaUmumKoef()));
 
       const { data: detailRows, error: detailErrorFetch } = await supabase
-        .from('detail_komponen')
+        .from('component_detail_view')
         .select('jumlah_harga')
         .eq('component_id', componentId);
 
@@ -347,7 +349,7 @@ export function ComponentsManager({ categoryRequest }: ComponentsManagerProps = 
     setDetailError(null);
 
     const { data, error: fetchError } = await supabase
-      .from('detail_komponen')
+      .from('component_detail_view')
       .select('*')
       .eq('component_id', componentId)
       .order('created_at', { ascending: true });
@@ -451,31 +453,20 @@ export function ComponentsManager({ categoryRequest }: ComponentsManagerProps = 
     setDetailError(null);
 
     try {
-      if (editingDetailId) {
-        const { error: updateError } = await supabase
-          .from('detail_komponen')
-          .update({
-            jenis: detailForm.jenis,
-            uraian: detailForm.uraian.trim(),
-            satuan: normalizedSatuan.trim(),
-            koefisien,
-            harga_satuan: hargaSatuan,
-          })
-          .eq('id', editingDetailId);
+      // Sumber daya (resources) dicari/dibuat di database lalu dihubungkan ke komponen melalui
+      // component_details. Bila hanya harga yang diubah, harga sumber daya diperbarui sekali dan
+      // berlaku untuk semua komponen yang memakainya.
+      const { error: saveError } = await supabase.rpc('save_component_detail', {
+        p_component_id: activeDetailComponent.id,
+        p_old_resource_id: editingDetailId,
+        p_jenis: detailForm.jenis,
+        p_uraian: detailForm.uraian.trim(),
+        p_satuan: normalizedSatuan.trim(),
+        p_koefisien: koefisien,
+        p_harga_satuan: hargaSatuan,
+      });
 
-        if (updateError) throw updateError;
-      } else {
-        const { error: insertError } = await supabase.from('detail_komponen').insert({
-          component_id: activeDetailComponent.id,
-          jenis: detailForm.jenis,
-          uraian: detailForm.uraian.trim(),
-          satuan: normalizedSatuan.trim(),
-          koefisien,
-          harga_satuan: hargaSatuan,
-        });
-
-        if (insertError) throw insertError;
-      }
+      if (saveError) throw new Error(saveError.message ?? 'Gagal menyimpan detail komponen');
 
       await recalculateComponentPrice(activeDetailComponent.id);
       await fetchComponentDetails(activeDetailComponent.id);
@@ -491,7 +482,10 @@ export function ComponentsManager({ categoryRequest }: ComponentsManagerProps = 
   const handleDeleteDetail = async (detailId: string) => {
     if (!activeDetailComponent) return;
 
-    const { error: deleteError } = await supabase.from('detail_komponen').delete().eq('id', detailId);
+    const { error: deleteError } = await supabase.rpc('delete_component_detail', {
+      p_component_id: activeDetailComponent.id,
+      p_resource_id: detailId,
+    });
     if (deleteError) {
       setDetailError(deleteError.message ?? 'Gagal menghapus detail komponen');
       return;

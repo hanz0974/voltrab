@@ -38,6 +38,7 @@ os.makedirs(MODEL_CACHE_DIR, exist_ok=True)
 
 CONF_THRESHOLD = 0.50
 IOU_THRESHOLD = 0.40
+DEFAULT_INPUT_SIZE = (640, 640)  # (tinggi, lebar) bila ukuran input tidak terbaca dari ONNX
 
 # Lazy-load model OpenCV
 _yolo_net = None
@@ -46,6 +47,35 @@ _cached_model_id = None
 _cached_model_updated_at = None
 _cached_model_path = None
 _cached_model_classes = None
+_cached_input_size = DEFAULT_INPUT_SIZE
+
+
+def _read_onnx_input_size(model_path: str) -> tuple[int, int]:
+    """Baca ukuran input (tinggi, lebar) model dari ONNX, mis. [1, 3, 640, 640] atau [1, 3, 1024, 1024]."""
+    try:
+        shape = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"]).get_inputs()[0].shape
+        h, w = int(shape[2]), int(shape[3])
+        if h > 0 and w > 0:
+            return h, w
+    except (ValueError, TypeError, IndexError, RuntimeError):
+        pass
+    return DEFAULT_INPUT_SIZE
+
+
+def _letterbox(frame: np.ndarray, size: tuple[int, int]) -> tuple[np.ndarray, float, int, int]:
+    """Perkecil gambar dengan menjaga perbandingan sisi lalu isi sisa kanvas dengan abu-abu 114,
+    sama seperti LetterBox Ultralytics saat pelatihan dan pengujian model.
+    Mengembalikan kanvas, skala, dan geser kiri/atas untuk memetakan kotak kembali ke gambar asli."""
+    in_h, in_w = size
+    h_img, w_img = frame.shape[:2]
+    scale = min(in_w / w_img, in_h / h_img)
+    new_w, new_h = int(round(w_img * scale)), int(round(h_img * scale))
+    pad_w, pad_h = (in_w - new_w) / 2, (in_h - new_h) / 2
+    left, top = int(round(pad_w - 0.1)), int(round(pad_h - 0.1))
+    resized = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR) if (new_w, new_h) != (w_img, h_img) else frame
+    canvas = np.full((in_h, in_w, 3), 114, dtype=np.uint8)
+    canvas[top:top + new_h, left:left + new_w] = resized
+    return canvas, scale, left, top
 
 
 def _read_onnx_class_names(model_path: str) -> list[str] | None:
@@ -107,7 +137,7 @@ def _download_model_from_storage(file_path: str, model_id: str) -> str:
 
 def get_onnx_model(force_reload: bool = False):
     """Load model ONNX aktif dari Supabase Storage berdasarkan database."""
-    global _yolo_net, _cached_model_id, _cached_model_updated_at, _cached_model_path, _cached_model_classes
+    global _yolo_net, _cached_model_id, _cached_model_updated_at, _cached_model_path, _cached_model_classes, _cached_input_size
 
     with _model_lock:
         if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
@@ -150,6 +180,8 @@ def get_onnx_model(force_reload: bool = False):
             print(f"[INFO] Memuat model ONNX aktif dari Supabase: {row['file_path']}")
             new_net = cv2.dnn.readNetFromONNX(local_model_path)
             model_classes = _read_onnx_class_names(local_model_path)
+            input_size = _read_onnx_input_size(local_model_path)
+            print(f"[INFO] Ukuran input model: {input_size[1]}x{input_size[0]}")
 
             old_path = _cached_model_path
             _yolo_net = new_net
@@ -157,6 +189,7 @@ def get_onnx_model(force_reload: bool = False):
             _cached_model_updated_at = updated_at_key
             _cached_model_path = local_model_path
             _cached_model_classes = model_classes
+            _cached_input_size = input_size
 
             if old_path and old_path != local_model_path and os.path.exists(old_path):
                 try:
@@ -189,18 +222,17 @@ def run_onnx_detection(image_path: str) -> list[dict]:
         return []
 
     h_img, w_img, _ = frame.shape
+    in_h, in_w = _cached_input_size
 
-    # Pre-processing OpenCV
-    blob = cv2.dnn.blobFromImage(frame, 1/255.0, (640, 640), swapRB=True, crop=False)
+    # Pre-processing: letterbox seperti saat pelatihan, bukan menarik gambar menjadi persegi
+    canvas, scale, pad_left, pad_top = _letterbox(frame, (in_h, in_w))
+    blob = cv2.dnn.blobFromImage(canvas, 1/255.0, (in_w, in_h), swapRB=True, crop=False)
     net.setInput(blob)
     outputs = net.forward()
 
     # Post-processing
     predictions = np.squeeze(outputs).T
     class_ids, confidences, boxes = [], [], []
-
-    x_factor = w_img / 640.0
-    y_factor = h_img / 640.0
 
     for row in predictions:
         scores = row[4:]
@@ -210,10 +242,11 @@ def run_onnx_detection(image_path: str) -> list[dict]:
         if confidence >= CONF_THRESHOLD:
             cx, cy, w, h = row[0], row[1], row[2], row[3]
 
-            left = int((cx - w / 2.0) * x_factor)
-            top = int((cy - h / 2.0) * y_factor)
-            width = int(w * x_factor)
-            height = int(h * y_factor)
+            # Koordinat kanvas letterbox dikembalikan ke piksel gambar asli
+            left = int((cx - w / 2.0 - pad_left) / scale)
+            top = int((cy - h / 2.0 - pad_top) / scale)
+            width = int(w / scale)
+            height = int(h / scale)
 
             left = max(0, left)
             top = max(0, top)
@@ -224,12 +257,24 @@ def run_onnx_detection(image_path: str) -> list[dict]:
             confidences.append(float(confidence))
             class_ids.append(class_id)
 
-    # NMS
-    indices = cv2.dnn.NMSBoxes(boxes, confidences, CONF_THRESHOLD, IOU_THRESHOLD)
+    # NMS per-kelas (sinkron audit_validasi_saklar.py, bukan agnostik)
+    # Backend lama agnostik sehingga ST/SG berdempetan saling suppress;
+    # audit lokal loop per kelas dengan IoU 0.40.
+    keep_indices: list[int] = []
+    if boxes:
+        for cls in set(class_ids):
+            cls_idx = [i for i, c in enumerate(class_ids) if c == cls]
+            cls_boxes = [boxes[i] for i in cls_idx]
+            cls_confs = [confidences[i] for i in cls_idx]
+            nms = cv2.dnn.NMSBoxes(cls_boxes, cls_confs, CONF_THRESHOLD, IOU_THRESHOLD)
+            if len(nms) > 0:
+                for k in nms.flatten():
+                    keep_indices.append(cls_idx[int(k)])
+        keep_indices.sort(key=lambda i: confidences[i], reverse=True)
     detections = []
 
-    if len(indices) > 0:
-        for index in indices.flatten():
+    if len(keep_indices) > 0:
+        for index in keep_indices:
             c_id = class_ids[index]
             model_classes = _cached_model_classes or CLASSES
             label = model_classes[c_id] if c_id < len(model_classes) else f"Unknown-{c_id}"

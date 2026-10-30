@@ -3,7 +3,7 @@
 # Pemakaian: ./deploy.sh [frontend|backend|all]   (bawaan: all)
 set -euo pipefail
 
-SERVER="root@95.111.196.35"
+SERVER="root@3.26.155.240"
 TARGET="${1:-all}"
 cd "$(dirname "$0")"
 
@@ -26,7 +26,7 @@ deploy_backend() {
     --exclude 'uploads/*' --exclude '.env' \
     backend/ "$SERVER:/opt/voltrab/backend/"
   echo "==> Bangun ulang dan jalankan container"
-  ssh "$SERVER" "cd /opt/voltrab/backend && docker compose up -d --build && docker image prune -f >/dev/null"
+  ssh "$SERVER" "cd /opt/voltrab/backend && (docker compose up -d --build 2>/dev/null || docker-compose up -d --build 2>/dev/null || (docker build -t voltrab-backend . && docker rm -f voltrab-backend 2>/dev/null; docker run -d --name voltrab-backend --restart unless-stopped -p 127.0.0.1:8000:8000 --env-file .env -v voltrab_models:/app/models --memory 1g voltrab-backend)) && docker image prune -f >/dev/null 2>&1 || true"
 }
 
 case "$TARGET" in
